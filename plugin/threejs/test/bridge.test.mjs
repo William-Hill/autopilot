@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { keySpec, makeFrame, project, unrealName, worldBox } from "../autopilot-bridge.js";
+import { createBridge, isLoopbackUrl, keySpec, makeFrame, project, unrealName, worldBox } from "../autopilot-bridge.js";
 import { camera, makeFakeGame, object } from "./fake_game.mjs";
 
 test("the kit frame is Godot's: kit = 100 * (-z, x, y)", () => {
@@ -198,4 +198,28 @@ test("watch notes what moved", async () => {
   }
   const r = await w;
   assert.deepEqual(r.changes.map((c) => [c.object, c.what]), [["/Scene/Player", "moved"]]);
+});
+
+test("the bridge connects only to this machine unless the game allows another host", () => {
+  for (const ok of ["ws://127.0.0.1:8765/v1/bridge", "ws://localhost:8765/v1/bridge", "ws://[::1]:8765/v1/bridge", "wss://127.0.0.2/x"])
+    assert.equal(isLoopbackUrl(ok), true, ok);
+  for (const bad of ["ws://example.com/v1/bridge", "wss://127.0.0.1.example.com/", "http://127.0.0.1:8765/", "ws://10.0.0.5/", "not a url", ""])
+    assert.equal(isLoopbackUrl(bad), false, bad);
+  const opened = [];
+  class FakeWS {
+    constructor(u) {
+      opened.push(u);
+    }
+  }
+  const quiet = { global: { addEventListener() {}, removeEventListener() {} }, requestFrame: () => {}, WebSocket: FakeWS };
+  const refused = createBridge({ ...quiet, url: "wss://example.com/v1/bridge" });
+  refused.connect();
+  assert.equal(refused.state, "refused");
+  assert.deepEqual(opened, []);
+  const allowed = createBridge({ ...quiet, url: "wss://example.com/v1/bridge", allowRemote: true });
+  allowed.connect();
+  assert.deepEqual(opened, ["wss://example.com/v1/bridge"]);
+  const local = createBridge({ ...quiet });
+  local.connect();
+  assert.equal(opened.at(-1), "ws://127.0.0.1:8765/v1/bridge");
 });

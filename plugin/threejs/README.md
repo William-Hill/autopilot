@@ -32,6 +32,11 @@ if (new URLSearchParams(location.search).get("autopilot") === "1") {
 }
 ```
 
+The bridge connects only to an agent service on this machine (`ws://127.0.0.1`, `localhost` or `[::1]`). Whatever it
+connects to can read the game, press its keys and call its functions, so a link with another host in `autopilot_url`
+must not take a player's game over: the bridge refuses such an address (state `refused`) unless the game itself
+passes `allowRemote: true`. The browser's WebSocket cannot send an `Authorization` header, so the bridge sends no token.
+
 `connectBridge`'s comment in the module lists every option and hook. Only `player` is needed for the kit's player
 reads; without `restart`, `session` restart answers 501; without `render`, a canvas made without
 `preserveDrawingBuffer` can read back black.

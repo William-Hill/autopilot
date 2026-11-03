@@ -248,6 +248,21 @@ function installGamepad(nav, pad) {
 
 // -- errors ----------------------------------------------------------------------------------------------------------
 
+// Whether an address is the agent service on this machine (ws:// or wss:// to 127.0.0.0/8, localhost or ::1). The
+// bridge lets whatever it connects to read the game, press its keys and call its functions: a link with another host
+// in it must not take a player's game over, so other hosts need the game's own allowRemote.
+export function isLoopbackUrl(address) {
+  let u;
+  try {
+    u = new URL(String(address));
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "ws:" && u.protocol !== "wss:") return false;
+  const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return host === "localhost" || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host);
+}
+
 export class OpError extends Error {
   constructor(message, status = 400) {
     super(message);
@@ -258,7 +273,8 @@ export class OpError extends Error {
 // -- the bridge ------------------------------------------------------------------------------------------------------
 
 // connectBridge(options) -> bridge. options:
-//   url: the agent service's address (DEFAULT_URL); WebSocket: the WebSocket class (globalThis.WebSocket);
+//   url: the agent service's address (DEFAULT_URL): this machine only (isLoopbackUrl) unless allowRemote is true;
+//   WebSocket: the WebSocket class (globalThis.WebSocket);
 //   scene, camera: the game's THREE.Scene and the camera it renders with (a function returning it, if it changes);
 //   canvas: the canvas it renders to (frames, the pointer, mouse events); keyTarget: what keyboard events go to
 //   (window);
@@ -346,6 +362,11 @@ export function createBridge(options = {}) {
 
   function connect() {
     if (closed || !WS) return;
+    if (!options.allowRemote && !isLoopbackUrl(url)) {
+      state = "refused";
+      options.onStatus?.(`refused: ${url} is not on this machine (the game must pass allowRemote to connect there)`);
+      return;
+    }
     state = "connecting";
     try {
       ws = new WS(url);
