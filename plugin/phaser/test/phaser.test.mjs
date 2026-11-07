@@ -221,6 +221,44 @@ test("restart, levels and pause default to the camera scene's and the game's own
   assert.equal(fake.game.isPaused, false);
 });
 
+test("a HUD Container's objects move with it; a hidden player keeps its feet", async () => {
+  const label = gameObject("Text", { name: "label", x: 10, y: 0, width: 40, height: 20, text: "Gems 2" });
+  const panel = container({ name: "panel", x: 100, y: 50, scrollFactorX: 0, scrollFactorY: 0 }, [label]);
+  const fake = makeFakePhaser();
+  fake.level.children.list.push(panel);
+  fake.level.cameras.main.worldView.x = 1000;
+  let t = (await fake.bridge.handle("transforms", { objects: ["/Game/Level/panel/label"] })).objects;
+  assert.deepEqual(t["/Game/Level/panel/label"].location, { X: 1110, Y: 0, Z: -50 }); // (on screen at 110, 50)
+  fake.player.visible = false; // (blinking after a hit)
+  const p = await fake.bridge.handle("pose", {});
+  assert.deepEqual(p.feet, { X: 100, Y: 0, Z: -400 });
+});
+
+test("game time never goes back on a restart and stops while paused", async () => {
+  const fake = makeFakePhaser();
+  fake.pump(10);
+  const t0 = (await fake.bridge.handle("ping", {})).game_time ?? (await fake.bridge.handle("context", {})).game_time;
+  const restarting = fake.bridge.handle("session", { action: "restart" });
+  fake.pump(3);
+  await restarting;
+  const t1 = (await fake.bridge.handle("context", {})).game_time;
+  assert.ok(t1 > t0, `${t1} > ${t0}`);
+  await fake.bridge.handle("pause", { paused: true });
+  fake.pump(5);
+  assert.equal((await fake.bridge.handle("context", {})).game_time, t1);
+});
+
+test("a game object out of the scenes read has no node; the copy runs at most mirrorFps a second", async () => {
+  const fake = makeFakePhaser();
+  const opts = phaserBridgeOptions(fake.game, { scenes: ["HUD"] });
+  assert.equal(opts.nodeOf(fake.player), null);
+  assert.ok(opts.nodeOf(fake.score));
+  let copies = 0;
+  const counting = makeFakePhaser({ options: { document: { createElement: () => ({ width: 0, height: 0, getContext: () => ({ drawImage: () => (copies += 1) }) }) } } });
+  counting.pump(63); // (about 1 s of 16 ms frames)
+  assert.ok(copies >= 9 && copies <= 11, String(copies));
+});
+
 test("arrow keys keep their Unreal names", () => {
   assert.equal(unrealName("ArrowRight"), "Right");
   assert.equal(unrealName("ArrowLeft"), "Left");

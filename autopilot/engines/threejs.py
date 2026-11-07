@@ -57,11 +57,6 @@ def dep_version(package, name):
     return None
 
 
-def three_version(package):
-    """The version of three a package.json asks for, or None when it doesn't use three."""
-    return dep_version(package, "three")
-
-
 class ThreeJS(OpEngine):
     name = "threejs"
     title = "Three.js (a game in the web browser)"

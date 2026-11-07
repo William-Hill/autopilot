@@ -107,15 +107,15 @@ export function cameraOf(cam) {
 //   hud: false leaves out objects drawn in screen space (scroll factor 0, or in a scene other than cameraScene);
 //        they are in by default, placed where they show over the world (userData.hud);
 //   include(gameObject) -> bool: false leaves an object (and what it holds) out;
-//   mirror: false never copies the frames (the bridge then reads the canvas as it is);
+//   mirror: false never copies the frames (the bridge then reads the canvas as it is); mirrorFps: copies a second (10);
 //   hooks: connectBridge's hooks, with Phaser's axes (pixels, y down) where they give positions:
 //     player() -> {object: the player's game object, x?, y? (its feet; the bottom middle of its box by default),
 //                  velocity?: {x, y} | [x, y] (pixels a second; its Arcade body's by default), onGround? (its body's
 //                  blocked.down or touching.down by default), facing?: 1 | -1 (-1 when flipX by default),
 //                  halfHeight?, state?} | null;
 //     move({direction: [x, y] (y down), seconds, scale, keys}): walk the player that way the game's own way;
-//     restart({map}), levels(), pause(paused), paused(), gameTime(): by default the camera scene's own (restart()
-//     and scene.start(map), the game's scene keys, game.pause() and game.resume(), the scene's clock);
+//     restart({map}), levels(), pause(paused), paused(), gameTime(): by default the camera scene's restart() and
+//     scene.start(map), the game's scene keys, game.pause() and game.resume(), and the sum of the game's step times;
 //     the others (movement, controls, render, objects, classOf, uiRoot) as connectBridge has them (classOf gets a
 //     scene object: its `gameObject` is the Phaser game object).
 // A game object's Data Manager gives what Three.js keeps in userData: "class", "thing" and "label" (a Text's label is
@@ -127,6 +127,9 @@ export function phaserBridgeOptions(game, options = {}) {
   const root = { name: String(options.name ?? "Game"), type: "Game", children: [], parent: null, visible: true, userData: {}, matrixWorld: { elements: IDENTITY }, rcTarget: game };
   let fresh = false; // the scene matches the game: true until the current task ends
   let camNode = null;
+  let live = new Set(); // the game objects the last rebuild placed: a node of another is out of the scene
+  let clock = 0; // game time (ms): the sum of Phaser's step deltas, so it stops while paused and never goes back
+  game?.events?.on?.("step", (_time, delta) => (clock += Number(delta) || 0));
 
   const scenesRead = () => {
     const all = game?.scene?.getScenes ? game.scene.getScenes(true) : [];
@@ -166,6 +169,7 @@ export function phaserBridgeOptions(game, options = {}) {
     const zoom = Number(cam?.zoom ?? 1) || 1;
     const camScene = worldScene();
     root.children = [];
+    live = new Set();
     for (const scene of scenesRead()) {
       const sn = nodeFor(scene, () => ({ type: "Scene", children: [], userData: {}, matrixWorld: { elements: IDENTITY }, rcTarget: scene }));
       sn.name = keyOf(scene);
@@ -177,12 +181,13 @@ export function phaserBridgeOptions(game, options = {}) {
       const list = scene.children?.list ?? scene.sys?.displayList?.list ?? [];
       // A screen point (the canvas' pixels) as the world point under it in the camera scene
       const toWorld = (sx, sy) => [Number(camWorld.x) + sx / zoom, Number(camWorld.y) + sy / zoom];
-      const place = (go, m) => {
+      // How far a top-level object moves to show in the world where it shows on screen: null for a world object. A
+      // screen-space object (scroll factor 0, or in another scene than the camera's) moves to the world point under
+      // its screen point (a translation: the cameras' zoom and rotation left out). A Container's objects move with it,
+      // as Phaser draws them with the Container's scroll factor.
+      const shiftOf = (go, m) => {
         const sf0 = Number(go.scrollFactorX ?? 1) === 0 && Number(go.scrollFactorY ?? 1) === 0;
-        const other = scene !== camScene;
-        if (!sf0 && !other) return { m, hud: false };
-        // Screen space: where it shows on the canvas, then the world under that (a translation; zoom and rotation of
-        // the cameras left out)
+        if (!sf0 && scene === camScene) return null;
         let sx = m.tx;
         let sy = m.ty;
         if (!sf0 && own?.worldView) {
@@ -191,24 +196,30 @@ export function phaserBridgeOptions(game, options = {}) {
           sy = (m.ty - Number(own.worldView.y)) * z;
         }
         const [wx, wy] = toWorld(sx, sy);
-        return { m: { ...m, tx: wx, ty: wy }, hud: true };
+        return [wx - m.tx, wy - m.ty];
       };
-      const add = (parent, go) => {
+      const add = (parent, go, inherited) => {
         if (!go || (options.include && !options.include(go))) return;
         const n = nodeFor(go, () => ({ children: [], userData: {}, gameObject: go, rcTarget: go, matrixWorld: { elements: IDENTITY } }));
-        const placed = place(go, affineOf(go));
-        if (placed.hud && options.hud === false) return;
+        const m = affineOf(go);
+        const shift = inherited === undefined ? shiftOf(go, m) : inherited;
+        if (shift && options.hud === false) return;
+        if (shift) {
+          m.tx += shift[0];
+          m.ty += shift[1];
+        }
+        live.add(go);
         n.name = String(go.name ?? "");
         n.type = String(go.type || go.constructor?.name || "GameObject");
         n.parent = parent;
         n.visible = go.visible !== false;
-        n.matrixWorld = { elements: nativeMatrix(placed.m) };
+        n.matrixWorld = { elements: nativeMatrix(m) };
         const box = localBox(go);
         n.geometry = box ? { boundingBox: box } : undefined;
-        n.userData = userDataOf(go, placed.hud);
+        n.userData = userDataOf(go, Boolean(shift));
         n.children = [];
         parent.children.push(n);
-        for (const c of go.list ?? []) add(n, c);
+        for (const c of go.list ?? []) add(n, c, shift);
       };
       for (const go of list) add(sn, go);
     }
@@ -218,19 +229,26 @@ export function phaserBridgeOptions(game, options = {}) {
     if (!v || typeof v !== "object") return null;
     if (v === game) return root;
     refresh();
-    return nodes.get(v) ?? null;
+    return live.has(v) ? nodes.get(v) : null;
   };
 
   // The frames: a WebGL canvas made without preserveDrawingBuffer reads back blank once the browser shows it, so a
   // copy of each frame is kept, made on postrender while the buffer still holds it. Checked each frame: the renderer
   // may not exist yet when the game calls this. null: no frame copied, the canvas is read as it is.
+  // The copy runs at most mirrorFps times a second (10): a copy is a GPU readback, and the game under test must keep
+  // its frame rate. A picture is then at most 1/mirrorFps seconds old.
   const doc = options.document ?? g.document;
   const WEBGL = 2; // Phaser.WEBGL
+  const nowMs = options.now ?? (() => (g.performance ? g.performance.now() : Date.now()));
+  const copyEvery = 1000 / Math.max(1, Number(options.mirrorFps ?? 10));
   let mirror = null;
+  let copiedAt = -Infinity;
   if (options.mirror !== false && doc?.createElement) {
     game?.events?.on?.("postrender", () => {
       const c = game.canvas;
       if (game.renderer?.type !== WEBGL || game.config?.preserveDrawingBuffer || !c?.width || !c?.height) return;
+      if (nowMs() - copiedAt < copyEvery) return;
+      copiedAt = nowMs();
       mirror ??= doc.createElement("canvas");
       if (mirror.width !== c.width) mirror.width = c.width;
       if (mirror.height !== c.height) mirror.height = c.height;
@@ -264,7 +282,7 @@ export function phaserBridgeOptions(game, options = {}) {
     hooks.paused = hooks.paused ?? (() => Boolean(game.isPaused));
   }
   if (!hooks.gameTime) {
-    hooks.gameTime = () => Number(worldScene()?.time?.now ?? game?.loop?.time ?? 0) / 1000;
+    hooks.gameTime = () => clock / 1000;
   }
 
   // The player hook's answer in the bridge's shape (the scene's axes, y up). Each field the hook leaves out comes from
@@ -355,7 +373,7 @@ function boxOf(node) {
   const stack = [node];
   while (stack.length) {
     const n = stack.pop();
-    if (n.visible === false) continue;
+    if (n !== node && n.visible === false) continue; // (the node itself counts even hidden: a blinking player)
     const b = n.geometry?.boundingBox;
     if (b) {
       const m = n.matrixWorld.elements;

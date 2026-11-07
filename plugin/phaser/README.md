@@ -24,8 +24,9 @@ options for the bridge's `connectBridge()`:
 - **Screen-space objects** (scroll factor 0, or in another scene such as a HUD scene) are placed where they show over
   the world, so `view` lists them with their `label` (a Text's text).
 - **Frames**: a WebGL canvas made without `preserveDrawingBuffer` reads back blank after the browser shows it. The
-  helper copies each frame on Phaser's `postrender` event, while the buffer still holds it, and the bridge reads the
-  copy. With `preserveDrawingBuffer: true` (or the Canvas renderer), the bridge reads the game's canvas.
+  helper copies a frame on Phaser's `postrender` event, while the buffer still holds it, and the bridge reads the
+  copy. A copy is a GPU readback, so it runs at most `mirrorFps` times a second (10). With
+  `preserveDrawingBuffer: true` (or the Canvas renderer), the bridge reads the game's canvas.
 
 ## Add it to a game
 
@@ -63,7 +64,7 @@ if (params.get("autopilot") === "1") {
 | `restart({map})` | the camera scene's `scene.restart()`, or `scene.start(map)` | start the level over, or another one |
 | `levels()` | every scene key, the camera scene's playing | `{levels, playing}` |
 | `pause(paused)`, `paused()` | `game.pause()` and `game.resume()` | pause or resume |
-| `gameTime()` | the camera scene's clock | seconds of game time |
+| `gameTime()` | the sum of the game's `step` deltas (it stops while paused, and never goes back) | seconds of game time |
 | `movement`, `controls`, `objects`, `classOf`, `render`, `uiRoot` | as `connectBridge` | see [`../threejs/README.md`](../threejs/README.md) |
 
 A game object's Data Manager gives what a Three.js object keeps in `userData`: `setData("class", "Coin")` gives it a
@@ -86,7 +87,7 @@ differences:
 | `view` | the boxes in the camera's world view, nearest its middle first; `camera` gives `width` and `height`, not a field of view |
 | `move` | the `move` hook, else keys held screen-relative: kit +X right, kit +Z up |
 | `rc` | a game object's path reaches the game object itself (`x`, `y`, `body`...); a game object in a value answers its path |
-| `capture`, `record` | the copy of the last frame (WebGL without `preserveDrawingBuffer`), else the canvas |
+| `capture`, `record` | the last copy of a frame (WebGL without `preserveDrawingBuffer`, 10 a second), else the canvas |
 | `session`, `levels`, `pause` | the hooks, else the Phaser scene manager and `game.pause()` |
 
 ## Headless

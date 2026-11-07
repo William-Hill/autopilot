@@ -130,6 +130,7 @@ export function makeFakePhaser({ url, WebSocket, options = {} } = {}) {
     level.time.now += dt * 1000;
     game.loop.time += dt * 1000;
     game.loop.frame += 1;
+    events.emit("step", game.loop.time, dt * 1000);
     events.emit("postrender");
   }
 

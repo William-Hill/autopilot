@@ -49,8 +49,8 @@
   In a platformer, up is usually a jump: press it.
 - **Levels**: `game.restart()` restarts the camera's scene (or calls the game's restart hook); `game.restart(map=...)`
   starts another scene by its key, as `game.request("levels")` names them (every scene of the game, not only its
-  levels: read the codex for which are levels). Game time (`game.t`) is the camera scene's clock, which stops while
-  the scene is paused.
+  levels: read the codex for which are levels). Game time (`game.t`) is the sum of the game's frame times: it stops
+  while the game is paused and goes on through a restart.
 - **The UI**: Phaser draws its UI on the canvas, as game objects: read it with `game.view` (labels) and click it with
   `game.pointer(object=...)`. `game.screen()` and `game.ui()` list only the page's DOM over the canvas (`owner.id`
   keys), which a Phaser game may not have.
@@ -58,7 +58,7 @@
   without the player: name, path, class, center, size, distance, screen_x/screen_y (-1..1, y up), top/bottom against
   the feet, `partly_in_view`, and `label`. `camera` gives the view's `location` (its middle), `width` and `height`. It
   does no line-of-sight test (`omitted` says what else it doesn't tell). A wide flat floor is left out.
-- **Pictures**: `capture` and `record` read the canvas. A WebGL game made without `preserveDrawingBuffer` is copied after
-  each frame (`postrender`), so a picture is the last frame drawn.
+- **Pictures**: `capture` and `record` read the canvas. A WebGL game made without `preserveDrawingBuffer` is copied 10
+  times a second after a frame is drawn (`postrender`), so a picture is at most 0.1 s old.
 - **Time**: the frame rate is the display's; `timestep` changes nothing. `pause` pauses the whole game
   (`game.pause()`), or calls the game's pause hook.

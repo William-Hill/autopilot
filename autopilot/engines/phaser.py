@@ -32,8 +32,10 @@ class Phaser(ThreeJS):
         frame; None stays None."""
         if v is None:
             return None
-        x, y = (v.get("x", 0.0), v.get("y", 0.0)) if isinstance(v, dict) else (v[0], v[1])
-        return Vec(float(x), 0.0, -float(y))
+        if isinstance(v, dict):
+            return Vec(float(v.get("x", 0.0)), 0.0, -float(v.get("y", 0.0)))
+        n = Vec.of(v)
+        return Vec(n.x, 0.0, -n.y)
 
     def to_native(self, v):
         k = Vec.of(v)
