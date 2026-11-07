@@ -107,7 +107,7 @@ export function cameraOf(cam) {
 //   hud: false leaves out objects drawn in screen space (scroll factor 0, or in a scene other than cameraScene);
 //        they are in by default, placed where they show over the world (userData.hud);
 //   include(gameObject) -> bool: false leaves an object (and what it holds) out;
-//   mirror: false never copies the frames (see pictureCanvas below);
+//   mirror: false never copies the frames (the bridge then reads the canvas as it is);
 //   hooks: connectBridge's hooks, with Phaser's axes (pixels, y down) where they give positions:
 //     player() -> {object: the player's game object, x?, y? (its feet; the bottom middle of its box by default),
 //                  velocity?: {x, y} | [x, y] (pixels a second; its Arcade body's by default), onGround? (its body's
@@ -125,7 +125,7 @@ export function phaserBridgeOptions(game, options = {}) {
   const userHooks = options.hooks ?? {};
   const nodes = new WeakMap(); // game object or scene -> its node, kept so a node is the same object from frame to frame
   const root = { name: String(options.name ?? "Game"), type: "Game", children: [], parent: null, visible: true, userData: {}, matrixWorld: { elements: IDENTITY }, rcTarget: game };
-  let builtAt = null;
+  let fresh = false; // the scene matches the game: true until the current task ends
   let camNode = null;
 
   const scenesRead = () => {
@@ -154,11 +154,12 @@ export function phaserBridgeOptions(game, options = {}) {
     return n;
   }
 
-  // Rebuild the scene (once a game frame: every op reads it many times).
+  // Rebuild the scene at most once a task: an op reads it many times, and the next op (even while the game is paused)
+  // sees what changed since.
   function refresh() {
-    const frame = game?.loop?.frame;
-    if (frame !== undefined && frame === builtAt) return;
-    builtAt = frame;
+    if (fresh) return;
+    fresh = true;
+    queueMicrotask(() => (fresh = false));
     const cam = mainCamera();
     camNode = cam ? cameraOf(cam) : null;
     const camWorld = cam?.worldView ?? { x: 0, y: 0 };
@@ -221,19 +222,16 @@ export function phaserBridgeOptions(game, options = {}) {
   };
 
   // The frames: a WebGL canvas made without preserveDrawingBuffer reads back blank once the browser shows it, so a
-  // copy of each frame is kept, made on postrender while the buffer still holds it.
+  // copy of each frame is kept, made on postrender while the buffer still holds it. Checked each frame: the renderer
+  // may not exist yet when the game calls this. null: no frame copied, the canvas is read as it is.
   const doc = options.document ?? g.document;
-  const needsMirror = () => {
-    if (options.mirror === false) return false;
-    const webgl = game?.renderer?.gl || game?.renderer?.type === 2 || game?.config?.renderType === 2;
-    return Boolean(webgl) && !game?.config?.preserveDrawingBuffer;
-  };
+  const WEBGL = 2; // Phaser.WEBGL
   let mirror = null;
-  if (needsMirror() && doc?.createElement && game?.events?.on) {
-    mirror = doc.createElement("canvas");
-    game.events.on("postrender", () => {
+  if (options.mirror !== false && doc?.createElement) {
+    game?.events?.on?.("postrender", () => {
       const c = game.canvas;
-      if (!c || !c.width || !c.height) return;
+      if (game.renderer?.type !== WEBGL || game.config?.preserveDrawingBuffer || !c?.width || !c?.height) return;
+      mirror ??= doc.createElement("canvas");
       if (mirror.width !== c.width) mirror.width = c.width;
       if (mirror.height !== c.height) mirror.height = c.height;
       mirror.getContext("2d")?.drawImage(c, 0, 0);
@@ -251,7 +249,7 @@ export function phaserBridgeOptions(game, options = {}) {
       if (!s?.scene) throw new Error("no scene to restart");
       if (map) s.scene.start(map);
       else s.scene.restart();
-      return nextFrames(2);
+      return afterFrames(2);
     };
   }
   if (!hooks.levels) {
@@ -269,20 +267,18 @@ export function phaserBridgeOptions(game, options = {}) {
     hooks.gameTime = () => Number(worldScene()?.time?.now ?? game?.loop?.time ?? 0) / 1000;
   }
 
-  // The player hook's answer in the bridge's shape (the scene's axes, y up).
+  // The player hook's answer in the bridge's shape (the scene's axes, y up). Each field the hook leaves out comes from
+  // the game object: its feet the bottom middle of its box (its position when it has no box).
   function playerOf(p) {
     if (!p) return null;
-    if (p.position) return p; // (already in the scene's axes)
-    const go = p.object ?? p.gameObject;
+    const go = p.object;
     const node = go ? nodeOf(go) : null;
-    let feet = null;
-    let half = p.halfHeight;
-    if (p.x !== undefined && p.y !== undefined) feet = toNative(p.x, p.y);
     const box = node ? boxOf(node) : null;
-    if (!feet && box) feet = [(box[0][0] + box[1][0]) / 2, box[0][1], 0];
-    if (!feet && go) feet = toNative(go.x, go.y);
-    if (!feet) return null;
-    if (half === undefined && box) half = (box[1][1] - box[0][1]) / 2;
+    const x = p.x ?? (box ? (box[0][0] + box[1][0]) / 2 : go?.x);
+    const y = p.y ?? (box ? -box[0][1] : go?.y);
+    if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return null;
+    const feet = toNative(x, y);
+    const half = p.halfHeight ?? (box ? (box[1][1] - box[0][1]) / 2 : 0);
     const body = go?.body;
     const v = p.velocity ?? body?.velocity;
     const vel = v ? [Number(v.x ?? v[0] ?? 0), -Number(v.y ?? v[1] ?? 0), 0] : [0, 0, 0];
@@ -290,23 +286,27 @@ export function phaserBridgeOptions(game, options = {}) {
     const facing = p.facing ?? (go?.flipX ? -1 : 1);
     return {
       object: node ?? undefined, position: feet, velocity: vel, forward: [facing < 0 ? -1 : 1, 0, 0],
-      ...(onGround !== undefined ? { onGround } : {}), halfHeight: Number(half ?? 0),
+      ...(onGround !== undefined ? { onGround } : {}), halfHeight: Number(half),
       ...(p.state !== undefined ? { state: p.state } : {}),
     };
   }
 
-  function nextFrames(n) {
+  // Resolves after n frames are drawn (Phaser starts a scene on its next step), or after a second: a paused game draws
+  // no frame, and a restart must not wait for it forever.
+  function afterFrames(n) {
     return new Promise((resolve) => {
       let left = n;
+      const done = () => {
+        game.events?.off?.("postrender", step);
+        clearTimeout(timer);
+        resolve();
+      };
       const step = () => {
         left -= 1;
-        if (left <= 0) {
-          game.events?.off?.("postrender", step);
-          resolve();
-        }
+        if (left <= 0) done();
       };
-      if (game?.events?.on) game.events.on("postrender", step);
-      else resolve();
+      const timer = setTimeout(done, 1000);
+      game.events?.on?.("postrender", step);
     });
   }
 
@@ -325,7 +325,7 @@ export function phaserBridgeOptions(game, options = {}) {
       return camNode;
     },
     canvas: options.canvas ?? (() => game?.canvas ?? null),
-    pictureCanvas: options.pictureCanvas ?? (mirror ? () => (mirror.width ? mirror : game?.canvas) : undefined),
+    pictureCanvas: options.pictureCanvas ?? (() => mirror ?? game?.canvas ?? null),
     nodeOf,
     hooks,
   };

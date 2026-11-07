@@ -54,7 +54,7 @@ export function makeFrame(metres = 1) {
 // Y is 0 on the plane. A rotation in the plane is a kit pitch (counterclockwise is up); a direction to the left has
 // yaw 180, every other direction yaw 0.
 export function makeFrame2D(kitPerUnit = 1) {
-  const s = kitPerUnit;
+  const s = Number(kitPerUnit) > 0 ? Number(kitPerUnit) : 1;
   const r2 = (x) => (Number.isFinite(x) ? Math.round(x * 100) / 100 + 0 : x); // (+ 0: never -0)
   const deg = (r) => (r * 180) / Math.PI;
   return {
@@ -343,8 +343,8 @@ export function connectBridge(options = {}) {
 
 export function createBridge(options = {}) {
   const hooks = options.hooks ?? {};
-  const dimension = options.dimension === "2d" ? "2d" : "3d";
-  const frame = dimension === "2d" ? makeFrame2D(options.kitPerUnit ?? 1) : makeFrame(options.metres ?? 1);
+  const frame = options.dimension === "2d" ? makeFrame2D(options.kitPerUnit ?? 1) : makeFrame(options.metres ?? 1);
+  const { dimension } = frame;
   const engine = String(options.engine ?? "threejs");
   const moveKeys = { up: "W", down: "S", left: "A", right: "D", ...(options.moveKeys ?? {}) };
   const g = options.global ?? globalThis;

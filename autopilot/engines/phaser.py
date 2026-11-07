@@ -28,14 +28,12 @@ class Phaser(ThreeJS):
     # -- the kit frame (2D) ------------------------------------------------------------------------------
 
     def to_kit(self, v):
-        """A Phaser position or velocity ({"x","y"}, a sequence, or a Vector2 as game.get reads it) in the kit's 2D
-        frame."""
-        if isinstance(v, dict) and "x" in v and "y" in v:
-            v = (v["x"], v["y"])
-        if isinstance(v, (list, tuple)) and len(v) >= 2:
-            return Vec(float(v[0]), 0.0, -float(v[1]))
-        n = Vec.of(v)
-        return None if n is None else Vec(n.x, 0.0, -n.y)
+        """A Phaser position or velocity ({"x","y"} or [x, y] in pixels, y down, as game.get reads it) in the kit's 2D
+        frame; None stays None."""
+        if v is None:
+            return None
+        x, y = (v.get("x", 0.0), v.get("y", 0.0)) if isinstance(v, dict) else (v[0], v[1])
+        return Vec(float(x), 0.0, -float(y))
 
     def to_native(self, v):
         k = Vec.of(v)

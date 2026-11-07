@@ -4,8 +4,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { makeFrame2D, unrealName } from "../../threejs/autopilot-bridge.js";
-import { affineOf, cameraOf, localBox, nativeMatrix } from "../autopilot-phaser.js";
-import { camera, container, gameObject, makeFakePhaser } from "./fake_phaser.mjs";
+import { affineOf, cameraOf, localBox, nativeMatrix, phaserBridgeOptions } from "../autopilot-phaser.js";
+import { camera, container, fakeCanvas, gameObject, makeFakePhaser } from "./fake_phaser.mjs";
 
 const close = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
 
@@ -86,7 +86,6 @@ test("pose reads the player's game object and its Arcade body", async () => {
   fake.player.body.velocity = { x: -50, y: -300 };
   fake.player.flipX = true;
   fake.player.body.blocked.down = false;
-  fake.game.loop.frame += 1;
   pose = await fake.bridge.handle("pose", {});
   assert.deepEqual(pose.velocity, { X: -50, Y: 0, Z: 300 }); // (up on screen is kit +Z)
   assert.equal(pose.body_yaw, 180);
@@ -113,7 +112,6 @@ test("view lists what the camera shows, never the player; HUD objects where they
 test("a HUD object (scroll factor 0) stays on screen as the camera scrolls; hud: false leaves it out", async () => {
   const fake = makeFakePhaser();
   fake.level.cameras.main.worldView.x = 1000;
-  fake.game.loop.frame += 1;
   const t = (await fake.bridge.handle("transforms", { objects: ["/Game/Level/lives", "/Game/HUD/score"] })).objects;
   assert.deepEqual(t["/Game/Level/lives"].location, { X: 1900, Y: 0, Z: -20 });
   assert.deepEqual(t["/Game/HUD/score"].location, { X: 1020, Y: 0, Z: -20 });
@@ -167,8 +165,40 @@ test("frames: a WebGL game without preserveDrawingBuffer is copied on postrender
   const kept = makeFakePhaser();
   kept.game.config.preserveDrawingBuffer = true;
   // (a canvas that keeps its picture is read as it is: no copy)
-  const opts = (await import("../autopilot-phaser.js")).phaserBridgeOptions(kept.game, { document: { createElement: () => assert.fail("no copy") } });
-  assert.equal(opts.pictureCanvas, undefined);
+  const opts = phaserBridgeOptions(kept.game, { document: { createElement: () => assert.fail("no copy") } });
+  kept.pump(2);
+  assert.equal(opts.pictureCanvas(), kept.canvas);
+});
+
+test("the copy starts when the WebGL renderer shows up, even after the helper was called", () => {
+  const fake = makeFakePhaser();
+  const renderer = fake.game.renderer;
+  fake.game.renderer = undefined; // (the game has not booted yet)
+  const opts = phaserBridgeOptions(fake.game, { document: { createElement: () => fakeCanvas() } });
+  fake.pump(1);
+  assert.equal(opts.pictureCanvas(), fake.canvas);
+  fake.game.renderer = renderer;
+  fake.pump(1);
+  assert.notEqual(opts.pictureCanvas(), fake.canvas);
+  assert.equal(opts.pictureCanvas().width, 960);
+});
+
+test("while the game is paused, a change shows in the next op; a restart still answers", async () => {
+  const fake = makeFakePhaser();
+  await fake.bridge.handle("pause", { paused: true });
+  fake.player.x = 250; // (no frame runs: the loop is paused)
+  const t = (await fake.bridge.handle("transforms", { objects: ["/Game/Level/player"] })).objects;
+  assert.equal(t["/Game/Level/player"].location.X, 250);
+  const r = await fake.bridge.handle("session", { action: "restart" }); // (no frame comes: the wait ends by time)
+  assert.equal(r.running, true);
+  assert.equal(fake.level.restarts, 1);
+});
+
+test("the player hook may give its feet's x alone; the rest comes from the game object", async () => {
+  const fake = makeFakePhaser({ options: { hooks: { player: () => ({ object: fake.player, x: 140 }) } } });
+  const p = await fake.bridge.handle("pose", {});
+  assert.deepEqual(p.feet, { X: 140, Y: 0, Z: -400 });
+  assert.deepEqual(makeFrame2D(0).kit([5, 0, 0]), { X: 5, Y: 0, Z: 0 }); // (a scale of 0 or less is 1)
 });
 
 test("restart, levels and pause default to the camera scene's and the game's own", async () => {
