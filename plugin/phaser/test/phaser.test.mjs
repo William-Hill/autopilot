@@ -3,7 +3,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeFrame2D, unrealName } from "../../threejs/autopilot-bridge.js";
+import { legacyKeyCode, makeFrame2D, unrealName } from "../../threejs/autopilot-bridge.js";
 import { affineOf, cameraOf, localBox, nativeMatrix, phaserBridgeOptions } from "../autopilot-phaser.js";
 import { camera, container, fakeCanvas, gameObject, makeFakePhaser } from "./fake_phaser.mjs";
 
@@ -257,6 +257,16 @@ test("a game object out of the scenes read has no node; the copy runs at most mi
   const counting = makeFakePhaser({ options: { document: { createElement: () => ({ width: 0, height: 0, getContext: () => ({ drawImage: () => (copies += 1) }) }) } } });
   counting.pump(63); // (about 1 s of 16 ms frames)
   assert.ok(copies >= 9 && copies <= 11, String(copies));
+});
+
+test("key events carry the legacy keyCode that Phaser's keyboard reads", async () => {
+  const codes = [];
+  const fake = makeFakePhaser({ options: { keyTarget: { dispatchEvent: (ev) => codes.push([ev.code, ev.keyCode]) } } });
+  await fake.bridge.handle("key", { key: "D", mode: "hold" });
+  await fake.bridge.handle("key", { key: "SpaceBar", mode: "hold" });
+  await fake.bridge.handle("key", { key: "Right", mode: "hold" });
+  assert.deepEqual(codes, [["KeyD", 68], ["Space", 32], ["ArrowRight", 39]]);
+  assert.deepEqual(["Digit1", "Numpad2", "F5", "Nope"].map(legacyKeyCode), [49, 98, 116, 0]);
 });
 
 test("arrow keys keep their Unreal names", () => {

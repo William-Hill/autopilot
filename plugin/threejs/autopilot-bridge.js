@@ -221,6 +221,24 @@ export function unrealName(code) {
   return code;
 }
 
+// The legacy keyCode of a code (KeyboardEvent.keyCode, which engines such as Phaser still read), or 0.
+const KEY_CODES = {
+  Space: 32, Enter: 13, Escape: 27, Tab: 9, Backspace: 8, ShiftLeft: 16, ShiftRight: 16, ControlLeft: 17,
+  ControlRight: 17, AltLeft: 18, AltRight: 18, MetaLeft: 91, MetaRight: 93, ArrowLeft: 37, ArrowUp: 38,
+  ArrowRight: 39, ArrowDown: 40, Delete: 46, Insert: 45, Home: 36, End: 35, PageUp: 33, PageDown: 34, CapsLock: 20,
+  Pause: 19, Semicolon: 186, Equal: 187, Comma: 188, Minus: 189, Period: 190, Slash: 191, Backquote: 192,
+  BracketLeft: 219, Backslash: 220, BracketRight: 221, Quote: 222,
+};
+export function legacyKeyCode(code) {
+  const k = /^Key([A-Z])$/.exec(code);
+  if (k) return k[1].charCodeAt(0);
+  const d = /^(Digit|Numpad)(\d)$/.exec(code);
+  if (d) return (d[1] === "Digit" ? 48 : 96) + Number(d[2]);
+  const f = /^F(\d{1,2})$/.exec(code);
+  if (f) return 111 + Number(f[1]);
+  return KEY_CODES[code] ?? 0;
+}
+
 // The `key` text a KeyboardEvent carries for a code.
 function keyText(code) {
   const k = /^Key([A-Z])$/.exec(code);
@@ -960,8 +978,15 @@ export function createBridge(options = {}) {
 
   function dispatchKey(code, down) {
     const Ev = g.KeyboardEvent;
-    const init = { code, key: keyText(code), bubbles: true, cancelable: true };
+    const keyCode = legacyKeyCode(code);
+    const init = { code, key: keyText(code), keyCode, which: keyCode, bubbles: true, cancelable: true };
     const ev = Ev ? new Ev(down ? "keydown" : "keyup", init) : { type: down ? "keydown" : "keyup", ...init, preventDefault() {} };
+    // A KeyboardEvent made by a script has keyCode 0 whatever its init says, and some engines (Phaser) read only
+    // keyCode: set it on the event itself
+    if (Ev && ev.keyCode !== keyCode) {
+      Object.defineProperty(ev, "keyCode", { value: keyCode });
+      Object.defineProperty(ev, "which", { value: keyCode });
+    }
     keyTarget.dispatchEvent?.(ev);
   }
 
