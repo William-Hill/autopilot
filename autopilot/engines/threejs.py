@@ -48,13 +48,18 @@ def read_package(folder):
         return {}
 
 
-def three_version(package):
-    """The version of three a package.json asks for, or None when it doesn't use three."""
+def dep_version(package, name):
+    """The version of a package (`name`) a package.json asks for, or None when it doesn't use it."""
     for key in ("dependencies", "devDependencies", "peerDependencies"):
-        v = (package.get(key) or {}).get("three")
+        v = (package.get(key) or {}).get(name)
         if v:
             return str(v)
     return None
+
+
+def three_version(package):
+    """The version of three a package.json asks for, or None when it doesn't use three."""
+    return dep_version(package, "three")
 
 
 class ThreeJS(OpEngine):
@@ -63,6 +68,14 @@ class ThreeJS(OpEngine):
     export_dir = None  # (no export: the codex is the source text)
     plugin_files = ()
     default_exe = NODE
+    package = "three"  # the npm package a project of this engine depends on
+    # The codex index's line on how things are named
+    things_note = ("- Things are the scene graph's objects, by path (/Scene/<child>/...): an unnamed object is named "
+                   "by its type, a repeated name gets #2, #3.")
+
+    def version_of(self, package):
+        """The version of this engine's npm package a package.json (a dict) asks for, or None."""
+        return dep_version(package, self.package)
 
     # -- the project on disk -----------------------------------------------------------------------------
 
@@ -78,7 +91,7 @@ class ThreeJS(OpEngine):
             path = os.path.dirname(path)
         if not os.path.isdir(path):
             return None
-        return path if three_version(read_package(path)) else None
+        return path if self.version_of(read_package(path)) else None
 
     def project_name(self, project):
         """package.json's name, else the folder's name."""
@@ -127,13 +140,13 @@ class ThreeJS(OpEngine):
             yield rel
 
     def index_notes(self, codex_root):
-        """Where to start in a web project: the page's entry scripts, the npm scripts, the three version, and where
-        the game gives the bridge its hooks."""
+        """Where to start in a web project: the page's entry scripts, the npm scripts, the engine's version, and
+        where the game gives the bridge its hooks."""
         pkg = read_package(codex_root)
         lines = ["", "## Where to start (from package.json and index.html)", ""]
-        version = three_version(pkg)
+        version = self.version_of(pkg)
         if version:
-            lines.append(f"- three {version}")
+            lines.append(f"- {self.package} {version}")
         scripts = pkg.get("scripts") or {}
         if scripts:
             lines.append("- npm scripts: " + ", ".join(f"{k} (`{v}`)" for k, v in scripts.items()))
@@ -159,8 +172,7 @@ class ThreeJS(OpEngine):
         if hooks:
             lines.append("- The game gives the bridge its player, movement, controls and restart in: "
                          + ", ".join(sorted(hooks)) + " (read it to see what pose, movement and move mean here)")
-        lines.append("- Things are the scene graph's objects, by path (/Scene/<child>/...): an unnamed object is named "
-                     "by its type, a repeated name gets #2, #3.")
+        lines.append(self.things_note)
         return lines
 
     # -- the kit frame -----------------------------------------------------------------------------------

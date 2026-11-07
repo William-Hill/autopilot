@@ -1,15 +1,17 @@
-"""The engines a game can be made in, each one adapter (see base.Engine): Unreal, Unity, Godot and Three.js (a game in
-the browser). The plugin's hello says which (`engine`; a plugin that doesn't say is Unreal's)."""
+"""The engines a game can be made in, each one adapter (see base.Engine): Unreal, Unity, Godot, and Phaser and Three.js
+(games in the browser). The plugin's hello says which (`engine`; a plugin that doesn't say is Unreal's)."""
 
 import os
 
 from .base import Engine, OpEngine  # noqa: F401
 from .godot import Godot
+from .phaser import Phaser
 from .threejs import ThreeJS
 from .unity import Unity
 from .unreal import Unreal
 
-ENGINES = {e.name: e for e in (Unreal(), Unity(), Godot(), ThreeJS())}
+# (Phaser before Three.js: a Phaser game may also use three, but a Three.js game rarely uses phaser)
+ENGINES = {e.name: e for e in (Unreal(), Unity(), Godot(), Phaser(), ThreeJS())}
 DEFAULT = "unreal"
 
 
