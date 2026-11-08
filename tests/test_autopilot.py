@@ -550,7 +550,7 @@ def test_play_exits_only_once_the_runs_data_is_sent(monkeypatch):
 
     done = threading.Event()
 
-    def run_prompt(link, prompt, path, model, sent=None, timeout=None, level=None):
+    def run_prompt(link, prompt, path, model, sent=None, timeout=None, level=None, confirm_cost=None):
         def upload():
             time.sleep(0.3)
             done.set()

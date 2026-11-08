@@ -52,6 +52,7 @@ from . import (
     training,
 )
 from . import codex as codexmod
+from . import estimate as costmod
 from . import levels as levelsmod
 from .agents.session import Steering, cut_off, default_timeout, go_on, scrub
 from .agents.session import model as agent_model
@@ -580,6 +581,10 @@ def close_game(link):
         print(f"note: couldn't close the game: {e}")
 
 
+class OverBudget(Exception):
+    """A run not started: its cost estimate is above AUTOPILOT_MAX_USD (cost_check)."""
+
+
 def load_user_keys():
     """The model keys the plugins' first-run setup saved, as saved now (autopilot/account.py)."""
     account.load_user_settings()
@@ -587,7 +592,7 @@ def load_user_keys():
 
 def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sent=None, steering=None, kind=None,
                play_minutes=None, trace=None, desk=None, level=None, aura_model=None, disable_premium_models=False,
-               feed=None, explore_minutes=None, design_brief=None):
+               feed=None, explore_minutes=None, design_brief=None, confirm_cost=None):
     """Research, write and run a harness for prompt; send the plugin the result and return the exit code.
 
     path: the project on this machine (--project); model: the language model; timeout: the agent's budget in
@@ -606,7 +611,9 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
     agent and model that play it (autopilot/aura.py), and the model that describes frames (else Aura's Claude);
     disable_premium_models: the start frame's run `disable_premium_models` (Aura's chat's "Disable Premium Models"),
     passed on with it: Auto in a chat it has picked nothing for yet plays the free-tier model; feed: a Feed that
-    keeps the run's activity events for a plugin that asks for them again (by default they are only sent).
+    keeps the run's activity events for a plugin that asks for them again (by default they are only sent);
+    confirm_cost(words): whether to start a run whose cost estimate is above AUTOPILOT_MAX_USD (by default it is
+    refused: cost_check).
 
     The plugin is told the tokens the run uses as it goes (telemetry.RunTelemetry). When the run's data is shared
     (telemetry.sharing, and for a run through Aura the user's Aura account), it is kept whole in the run's
@@ -645,7 +652,10 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
             timeout = max(timeout or default_timeout(), play_seconds + PAST_PLAY_SECONDS)
         return asked, play_seconds
 
+    over_budget = cost_check(link, model=model, play_minutes=play_minutes or explore_minutes, confirm=confirm_cost)
     try:
+        if over_budget:
+            raise OverBudget(over_budget)
         if aura.enabled():
             # (a kind not known yet is told to Aura as a goal: Aura bills every kind the same)
             run = start_aura_run(link, kind or "goal", (link.hello or {}).get("project") or "game", path,
@@ -657,6 +667,9 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
         if e.code == "NO_CREDITS":  # (the plugins' chat page and Settings say so until the team has credits again)
             account.note_credits(e.message)
             credits_refused = True
+    except OverBudget as e:
+        report = {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved", "summary": str(e),
+                  "evidence": []}
     else:
         with run or contextlib.nullcontext(), contextlib.ExitStack() as setup:
             if not kind:
@@ -841,10 +854,64 @@ def cmd_codex(args):
     return 0
 
 
+def project_folder(path=None, name=None):
+    """The memory folder of the project at path (or of the one named), or None when neither is given."""
+    if not name and path:
+        eng, found = engines.find_project(path)
+        name = eng.project_name(found) if eng else os.path.basename(os.path.abspath(path).rstrip(os.sep))
+    return codexmod.project_dir(name) if name else None
+
+
+def cmd_estimate(args):
+    """`autopilot estimate` and `autopilot play --estimate`: the expected cost of one run, for each way to pay. Nothing
+    is started and no model is called."""
+    e = costmod.estimate(project_folder(args.path, getattr(args, "name", None)), agent=getattr(args, "agent", None),
+                         model=args.model, fast=getattr(args, "fast", None), episodes=getattr(args, "episodes", None),
+                         minutes=getattr(args, "minutes", None))
+    if getattr(args, "json", False):
+        print(json.dumps(e, indent=1))
+    else:
+        print(costmod.text(e))
+        over = costmod.over_limit(e, aura=aura.enabled())
+        if over:
+            print(f"  {over}")
+    return 0
+
+
+def cost_check(link, model=None, play_minutes=None, confirm=None):
+    """Before a run: its cost estimate, printed and told to the plugin. Returns the words that refuse the run when its
+    high estimate is above AUTOPILOT_MAX_USD and confirm() (the user, asked) does not allow it; else None. An
+    estimate that fails never stops a run."""
+    try:
+        through_aura = aura.enabled()
+        e = costmod.estimate(codexmod.project_dir(codexmod.project_of(link.hello)), model=model,
+                             minutes=play_minutes)
+        print(costmod.text(e))
+        with contextlib.suppress(Exception):
+            link.status(costmod.summary(e, aura=through_aura))
+        over = costmod.over_limit(e, aura=through_aura)
+    except Exception as ex:  # noqa: BLE001 - the estimate only informs
+        print(f"No cost estimate: {type(ex).__name__}: {ex}")
+        return None
+    if over and confirm is not None and confirm(over):
+        return None
+    return over
+
+
+def ask_on_terminal(words):
+    """Ask on the terminal whether to start a run above the cost limit; no when there is no terminal."""
+    if not sys.stdin or not sys.stdin.isatty():
+        return False
+    try:
+        return input(f"{words}\nStart the run anyway? [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
 def cmd_play(link, args):
     asked, sent = link.hello.get("run"), []
     code = run_prompt(link, args.prompt, args.path, args.model, sent=sent, timeout=time_limit(asked),
-                      level=getattr(args, "level", None) or (asked or {}).get("level"))
+                      level=getattr(args, "level", None) or (asked or {}).get("level"), confirm_cost=ask_on_terminal)
     if asked:
         # A game started with a run on its command line quits on the result: let it close first (closing at once can
         # cost it the result: a WebSocket client may drop what is buffered on close, as Godot's does). One that lost
@@ -1097,6 +1164,21 @@ def parser():
                                    "agent decides, else the one open in the editor)")
     p.add_argument("--aura", action="store_true",
                    help="sign in with Aura: run on your Aura plan instead of your own keys")
+    p.add_argument("--estimate", action="store_true", help="show the run's expected cost and exit (the run does not "
+                                                           "start): the same as `autopilot estimate`")
+    e = sub.add_parser("estimate", help="show what a run is expected to cost, for each way to pay, without the run")
+    e.add_argument("prompt", nargs="?", help="the prompt (not needed for the estimate)")
+    e.add_argument("--project", dest="path", help=project_help + " (its earlier runs make the estimate closer)")
+    e.add_argument("--name", help="the project's name in memory/ (default: from --project)")
+    e.add_argument("--agent", choices=agents.NAMES, help="the agent (default: AUTOPILOT_AGENT)")
+    e.add_argument("--model", help="the language model (default: AUTOPILOT_MODEL)")
+    e.add_argument("--fast", action=argparse.BooleanOptionalAction, default=None,
+                   help="fast mode for an Opus model (default: on unless AUTOPILOT_FAST=0)")
+    e.add_argument("--episodes", type=int, help="the episodes to plan for (default: as in earlier runs, else 2)")
+    e.add_argument("--minutes", type=float, help="the minutes of play to plan for (an exploration's time limit)")
+    e.add_argument("--json", action="store_true", help="print the estimate as JSON")
+    for q in (p, e):
+        q.add_argument("--max-usd", type=float, help="the most a run may cost (default: AUTOPILOT_MAX_USD)")
     c = sub.add_parser("codex", help="build a project's codex without the game running")
     c.add_argument("--project", dest="path", required=True, help=project_help)
     c.add_argument("--name", help="the project's name in memory/ (default: from its path)")
@@ -1136,6 +1218,16 @@ def main(argv=None):
         from . import mcp
 
         return mcp.main()
+    if getattr(args, "max_usd", None):
+        os.environ["AUTOPILOT_MAX_USD"] = str(args.max_usd)
+    if args.cmd == "estimate" or getattr(args, "estimate", False):  # (no plugin, no account, no process started)
+        from dotenv import load_dotenv
+
+        load_dotenv(os.path.join(HERE, ".env"))
+        load_user_keys()
+        if getattr(args, "aura", False):
+            aura.use_default()
+        return cmd_estimate(args)
     processes.contain()
     if getattr(args, "exit_with", None):
         processes.exit_with(args.exit_with, finish=finish_after_run)

@@ -94,6 +94,38 @@ For every prompt, Autopilot will automatically launch a PIE window and start rea
 
 Your first few runs allow Autopilot to learn about your game as it gradually populates its memory. Expect some suboptimal behavior for the first few harness attempts. **Autopilot visibly improves the more it plays your game**, and later harness attempts and runs both take a shorter time to complete a given task, as well as exhibit more intelligent behavior (e.g. faster dodging, equipping better weapons, playing smarter strategies, better aiming).
 
+## Cost Estimate
+
+Autopilot can show the expected cost of a run before the run starts. The estimate does not start the run and does not call a model.
+
+```bash
+autopilot estimate --project path/to/your/project
+autopilot play "Reach the door" --project path/to/your/project --estimate
+```
+
+The estimate gives a range, not one number, for each way to pay:
+
+- **Own keys** (the keys in `autopilot.env`): the LLM provider's part (the agent's model and the reading model) and the decision model's part (Jev, on TypeSafe).
+- **Aura credits** (`--aura`): the own-key total multiplied by a factor from an earlier Aura bill. Through Aura, Aura picks the agent and the model. Give the same `--agent` and `--model` to the estimate.
+
+The estimate uses these inputs:
+
+1. The agent and its model: `AUTOPILOT_AGENT`, `AUTOPILOT_MODEL` and fast mode (`AUTOPILOT_FAST`), or `--agent`, `--model` and `--fast`/`--no-fast`.
+2. The reading model: `AUTOPILOT_HELPER_MODEL`, else the provider's cheaper model.
+3. The decision model: `AUTOPILOT_JEV_MODEL`, else Jev.
+4. The planned episodes (`--episodes`) or minutes of play (`--minutes`).
+5. The earlier runs of the same project in `memory/<project>/runs/`. With no earlier runs, the estimate uses default amounts, and the range is wider.
+
+The prices are in `autopilot/prices.json`. Each price table has a source URL and a date. Update a price there when a provider changes it. A model with no price is named in the output.
+
+Every real run also prints its estimate at the start. To stop a run that can cost too much, set a limit:
+
+```bash
+export AUTOPILOT_MAX_USD=5
+```
+
+You can also give `--max-usd 5` to `autopilot play`. When the high estimate is above the limit, `autopilot play` asks on the terminal before it starts the run. A run started from the plugin, or a run with no terminal, does not start, and its report gives the reason.
+
 ## Uninstallation
 
 To do a clean uninstall of Autopilot, do the following steps:
