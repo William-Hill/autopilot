@@ -431,11 +431,34 @@ def test_the_runtime_plays_with_each_provider(name, tmp_path):
     assert res["options"]["open_crate"]["started"] >= 1
 
 
-def test_the_runtime_counts_a_providers_errors(tmp_path):
-    client = decision.ClefDecider(session=FakeSession({"errors": ["Authentication error"]}, status=401))
+def failing_client(name, monkeypatch):
+    """Each provider's client, its API down: Jev's (as decision.client() makes it), Anthropic's, Clef's, OpenAI's."""
+    if name == "jev":
+        import typesafe_sdk
+
+        class DownJev:
+            def system_one(self, *a, **k):
+                raise typesafe_sdk.TypeSafeAPIConnectionError("no network")
+
+        monkeypatch.setattr(runtime, "jev_client", lambda warm=True: DownJev())
+        return decision.client(), "jev: TypeSafeAPIConnectionError"
+    if name == "anthropic":
+        class Down(FakeSDK):
+            def create(self, **req):
+                raise ConnectionError("no network")
+
+        return decision.AnthropicDecider(sdk=Down({})), "jev: ConnectionError"
+    cls = decision.ClefDecider if name == "clef" else decision.OpenAIDecider
+    return cls(session=FakeSession({"errors": ["Authentication error"]}, status=401)), "jev: RuntimeError"
+
+
+@pytest.mark.parametrize("name", ["jev", "anthropic", "clef", "openai"])
+def test_the_runtime_counts_a_providers_errors(name, monkeypatch, tmp_path):
+    client, counted = failing_client(name, monkeypatch)
     rt = crate_runtime(client, tmp_path, max_seconds=2)
-    rt.run()
-    assert rt.errors["jev: RuntimeError"] >= 1
+    res = rt.run()
+    assert rt.errors[counted] >= 1
+    assert res["status"]["state"] != "done"  # (no decision, so the crate stays shut until the time is up)
 
 
 def test_jev_keeps_jevs_answer_limit(tmp_path):
@@ -449,3 +472,14 @@ def test_the_sandboxed_runtime_gets_the_providers_answer_limit():
     """The child plays with RemoteJev: it carries the parent's answer_timeout (sandbox init), else Jev's applies."""
     assert sandbox.RemoteJev(link=None, answer_timeout=3.0).answer_timeout == 3.0
     assert sandbox.RemoteJev(link=None).answer_timeout is None  # (the runtime then uses JEV_TIMEOUT)
+
+
+def test_a_decision_call_has_a_bounded_time(monkeypatch):
+    """Every decision call ends by a fixed time: the runtime forgets it after answer_timeout * 2.5, and its worker
+    thread must be free by then. The SDK does not retry (a 429's retry-after could hold the thread for a minute)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    sdk = decision.AnthropicDecider().sdk
+    assert sdk.max_retries == 0 and sdk.timeout == decision.ANTHROPIC_TIMEOUT
+    s = FakeSession(OPENAI_ANSWER)
+    decision.OpenAIDecider(session=s).system_one(state={}, questions=questions3())
+    assert s.posts[0]["timeout"] == decision.HTTP_TIMEOUT  # (requests does not retry)
