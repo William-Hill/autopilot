@@ -6,6 +6,8 @@
 
 import { createBridge } from "../../threejs/autopilot-bridge.js";
 import { phaserBridgeOptions } from "../autopilot-phaser.js";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 function emitter() {
   const on = new Map();
@@ -167,7 +169,8 @@ export function makeFakePhaser({ url, WebSocket, options = {} } = {}) {
 
 // `node fake_phaser.mjs ws://127.0.0.1:<port>/v1/bridge`: connect to that agent service and run frames in real time
 // until it closes the connection.
-if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop()) && process.argv[2]) {
+// (as a real path's file URL: on Windows argv[1] has backslashes, which a "/" split leaves whole)
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href && process.argv[2]) {
   const fake = makeFakePhaser({ url: process.argv[2], WebSocket: globalThis.WebSocket });
   fake.bridge.connect();
   const timer = setInterval(() => {
