@@ -32,6 +32,11 @@ MAP_FILE_BYTES = 400_000  # one file's text in one llm_map call, at most (a mode
                           # in parts of this size, each answered, and the answers kept together
 
 
+def helper_model(provider, agent_model=None):
+    """The reading model for a provider's run: AUTOPILOT_HELPER_MODEL, else HELPER's, else the agent's own."""
+    return (os.environ.get("AUTOPILOT_HELPER_MODEL") or "").strip() or HELPER.get(provider) or agent_model
+
+
 class Model:
     """A run's model for the brain's own reading. provider, agent_model: the agent's; usage: the run's
     telemetry.Usage (calls not through the run's proxy are counted there); proxied: the proxy's URL prefix."""
@@ -42,7 +47,7 @@ class Model:
         self.route, self.unavailable = vision.route(provider, agent_model)
         if self.route is not None:
             wire, root, key, _, path = self.route
-            chosen = (os.environ.get("AUTOPILOT_HELPER_MODEL") or "").strip() or HELPER.get(provider) or agent_model
+            chosen = helper_model(provider, agent_model)
             self.route = (wire, root, key, chosen or agent_model, path)
         self.usage = usage
         self.proxied = proxied

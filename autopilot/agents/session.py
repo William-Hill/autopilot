@@ -344,6 +344,11 @@ def fast_mode():
     return (os.environ.get("AUTOPILOT_FAST") or "").strip() != "0"
 
 
+def fast_for(model):
+    """Whether this model plays in fast mode: an Opus model, unless AUTOPILOT_FAST=0 (fast_mode)."""
+    return fast_mode() and "opus" in str(model).lower()
+
+
 def default_timeout():
     """One request's whole budget, in seconds, when the run doesn't give one: AUTOPILOT_TIMEOUT as the environment says
     it now (autopilot.env is loaded before every run, after this module is imported), else TIMEOUT."""
@@ -1909,6 +1914,11 @@ def finish(session, started, stopped, last_text, **facts):
         report["background_findings"] = len(session.findings)
     if session.reader is not None and session.reader.model.tokens:  # (llm, llm_map and the researcher, by model)
         report["reading_usage"] = session.reader.model.tokens
+    try:  # (Jev's decisions and the seconds of play per episode: the next cost estimate reads them here)
+        from ..estimate import episode_stats
+        report["episode_stats"] = episode_stats(session.run_dir)
+    except Exception:  # noqa: BLE001 - the report is written whatever these give
+        pass
     with open(os.path.join(session.run_dir, "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=1)
     # The codex this run worked from: the next run is told what changed since. Only a run that played or reported
