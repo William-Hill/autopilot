@@ -77,6 +77,7 @@ TIME_LIMIT_MINUTES = (1.0, 600.0)
 # waits for it before it exits, as a thread pool takes no work once the main thread has ended
 AFTER_RUN = []
 AFTER_RUN_SECONDS = 600.0
+CONFIRM_SECONDS = 120.0  # how long `autopilot play` waits for the user to allow a run above AUTOPILOT_MAX_USD
 # A Reset memory waits for that first (it reads the run's files, and on Windows a folder with a file open can't move),
 # up to RESET_WAIT_SECONDS; then a file still in use is tried again RESET_TRIES times, a second apart
 RESET_WAIT_SECONDS = 120.0
@@ -871,9 +872,13 @@ def project_folder(path=None, name=None):
 def cmd_estimate(args):
     """`autopilot estimate` and `autopilot play --estimate`: the expected cost of one run, for each way to pay. This
     starts no run and calls no model."""
-    e = costmod.estimate(project_folder(args.path, getattr(args, "name", None)), agent=getattr(args, "agent", None),
-                         model=args.model, fast=getattr(args, "fast", None), episodes=getattr(args, "episodes", None),
-                         minutes=getattr(args, "minutes", None))
+    try:
+        e = costmod.estimate(project_folder(args.path, getattr(args, "name", None)),
+                             agent=getattr(args, "agent", None), model=args.model, fast=getattr(args, "fast", None),
+                             episodes=getattr(args, "episodes", None), minutes=getattr(args, "minutes", None))
+    except (OSError, ValueError, KeyError) as ex:  # (prices.json missing or damaged)
+        print(f"No cost estimate: {type(ex).__name__}: {ex}. Check autopilot/prices.json.")
+        return 1
     if getattr(args, "json", False):
         print(json.dumps(e, indent=1))
     else:
@@ -904,14 +909,29 @@ def cost_check(link, model=None, play_minutes=None, confirm=None):
     return over
 
 
-def ask_on_terminal(words):
-    """Ask on the terminal whether to start a run above the cost limit; no when there is no terminal."""
+def ask_on_terminal(words, seconds=None, read=input):
+    """Ask on the terminal whether to start a run above the cost limit. No when there is no terminal, on Ctrl-C or the
+    end of input, and when nobody answers in CONFIRM_SECONDS: the game that waits for the run then gets a result."""
     if not sys.stdin or not sys.stdin.isatty():
         return False
+    answer = []
+
+    def ask():
+        try:
+            answer.append(read(f"{words}\nStart the run anyway? [y/N] "))
+        except (EOFError, KeyboardInterrupt, OSError):
+            pass
+
+    asking = threading.Thread(target=ask, name="cost-confirm", daemon=True)  # (left reading after a timeout)
+    asking.start()
     try:
-        return input(f"{words}\nStart the run anyway? [y/N] ").strip().lower() in ("y", "yes")
-    except EOFError:
+        asking.join(CONFIRM_SECONDS if seconds is None else seconds)
+    except KeyboardInterrupt:
         return False
+    if not answer:
+        print("No answer: the run does not start.")
+        return False
+    return answer[0].strip().lower() in ("y", "yes")
 
 
 def cmd_play(link, args):

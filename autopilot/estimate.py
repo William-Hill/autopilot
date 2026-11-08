@@ -137,16 +137,17 @@ def history(project_dir, table):
                 r = json.load(f)
         except (OSError, ValueError):
             continue
-        episodes = r.get("episodes") or 0
-        if r.get("cost_usd") is None or episodes < 1:
-            continue
+        episodes, cost = r.get("episodes"), r.get("cost_usd")
+        if not isinstance(cost, (int, float)) or not isinstance(episodes, int) or episodes < 1:
+            continue  # (no cost data, or a report another version wrote differently)
         price = input_price(r.get("model"), table, bool(r.get("fast")))
         traces = _trace_numbers(os.path.dirname(report))
-        reading = usage_units(r.get("reading_usage"), table)
+        usage = r.get("reading_usage")
+        reading = usage_units(usage, table) if isinstance(usage, dict) else None  # (none, or damaged: unknown)
         runs.append({
             "run": r.get("run") or os.path.basename(os.path.dirname(report)),
             "agent": r.get("agent"), "episodes": episodes,
-            "agent_units": r["cost_usd"] / price / episodes if price else None,
+            "agent_units": cost / price / episodes if price else None,
             "reading_units": reading / episodes if reading is not None else None,
             "decisions": statistics.mean(d for d, _ in traces) if traces else None,
             "play_seconds": statistics.mean(s for _, s in traces) if traces and any(s for _, s in traces) else None,

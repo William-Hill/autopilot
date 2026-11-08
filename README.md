@@ -124,7 +124,7 @@ Every real run also prints its estimate at the start. To stop a run that can cos
 export AUTOPILOT_MAX_USD=5
 ```
 
-You can also give `--max-usd 5` to `autopilot play`. When the high estimate is above the limit, `autopilot play` asks on the terminal before it starts the run. A run started from the plugin, or a run with no terminal, does not start, and its report gives the reason.
+You can also give `--max-usd 5` to `autopilot play`. When the high estimate is above the limit, `autopilot play` asks on the terminal before it starts the run. With no answer in 120 seconds, or on Ctrl-C, the run does not start. A run started from the plugin, or a run with no terminal, does not start, and its report gives the reason.
 
 ## Uninstallation
 

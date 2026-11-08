@@ -253,3 +253,106 @@ def test_through_aura_the_estimate_uses_the_model_picked_in_aura(tmp_path, monke
     args = run_prompt_estimates(monkeypatch, tmp_path, kind="goal", model="claude-opus-5-5",
                                 aura_model="claude-sonnet-5-5")
     assert args["model"] == "claude-sonnet-5-5"
+
+
+# -- the confirm prompt, the price table and history loading: every wait and every load has an exit -----------------
+
+
+@pytest.fixture
+def terminal(monkeypatch):
+    monkeypatch.setattr(cli.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
+
+
+def test_the_confirm_prompt_starts_the_run_only_on_yes(terminal):
+    assert cli.ask_on_terminal("over", read=lambda q: "y") is True
+    assert cli.ask_on_terminal("over", read=lambda q: "YES ") is True
+    assert cli.ask_on_terminal("over", read=lambda q: "") is False
+    assert cli.ask_on_terminal("over", read=lambda q: "n") is False
+
+
+def test_the_confirm_prompt_says_no_on_ctrl_c_end_of_input_and_timeout(terminal):
+    def raises(error):
+        def read(q):
+            raise error
+        return read
+
+    assert cli.ask_on_terminal("over", read=raises(KeyboardInterrupt())) is False
+    assert cli.ask_on_terminal("over", read=raises(EOFError())) is False
+    import threading
+
+    never = threading.Event()
+    assert cli.ask_on_terminal("over", seconds=0.05, read=lambda q: never.wait(5) or "y") is False
+
+
+def test_the_confirm_prompt_says_no_without_a_terminal(monkeypatch):
+    monkeypatch.setattr(cli.sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
+    assert cli.ask_on_terminal("over", read=lambda q: pytest.fail("no terminal to ask on")) is False
+
+
+def test_a_damaged_price_table_ends_the_estimate_command_with_an_error(tmp_path, monkeypatch, capsys):
+    bad = tmp_path / "prices.json"
+    bad.write_text("{not json")
+    monkeypatch.setattr(est, "PRICES", str(bad))
+    monkeypatch.setattr(est.prices, "__defaults__", (str(bad),))
+    args = types.SimpleNamespace(path=None, name=None, agent="claude", model=None, fast=None, episodes=None,
+                                 minutes=None, json=False)
+    assert cli.cmd_estimate(args) == 1
+    assert "Check autopilot/prices.json" in capsys.readouterr().out
+
+
+def test_damaged_and_unfinished_reports_are_left_out_of_history(tmp_path):
+    write_run(tmp_path, REFERENCE)
+    write_run(tmp_path, dict(REFERENCE, run="20261108-000000", cost_usd="2.5"))
+    write_run(tmp_path, dict(REFERENCE, run="20261109-000000", episodes="2"))
+    write_run(tmp_path, dict(REFERENCE, run="20261110-000000", reading_usage=["not", "a", "dict"]))
+    (tmp_path / "runs" / "20261111-000000").mkdir()  # (a run still going: no report yet)
+    (tmp_path / "runs" / "20261111-000000" / "trace1.jsonl").write_text('{"kind": "decision", "t": 1')
+    damaged = tmp_path / "runs" / "20261112-000000"
+    damaged.mkdir()
+    (damaged / "report.json").write_text('{"cost_usd": 1.0, "episodes"')  # (written half)
+    runs = est.history(str(tmp_path), est.prices())
+    assert [r["run"] for r in runs] == ["20261110-000000", "20261107-165445"]
+    assert runs[0]["reading_units"] is None and runs[0]["agent_units"] is not None
+
+
+def test_a_trace_cut_off_mid_line_still_counts_its_whole_lines(tmp_path):
+    run = write_run(tmp_path, REFERENCE, decisions=(10,), seconds=(20.0,))
+    with open(run / "trace1.jsonl", "a") as f:
+        f.write('\n{"kind": "decision", "t": 2')
+    assert est._trace_numbers(str(run)) == [(10, 20.0)]
+
+
+# -- each way to pay, with and without history, and a model with no price --------------------------------------------
+
+
+def test_through_aura_the_estimate_prices_aura_s_agent_and_the_aura_total(monkeypatch):
+    monkeypatch.setattr("autopilot.aura.enabled", lambda: True)
+    monkeypatch.setenv("AUTOPILOT_AGENT", "codex")  # (Aura plays with its own agent, whatever this says)
+    e = est.estimate(None, model="claude-opus-5-5")
+    assert e["agent"] == "claude" and e["provider"] == "anthropic" and e["fast"]
+    factor = est.prices()["aura"]["factor"]
+    assert e["aura"] == pytest.approx(tuple(x * factor for x in e["own_keys"]))
+
+
+def test_the_limit_reads_the_figure_of_the_way_the_run_pays(monkeypatch):
+    e = {"own_keys": (1.0, 4.0), "aura": (1.0, 2.0)}
+    monkeypatch.setenv("AUTOPILOT_MAX_USD", "3")
+    assert est.over_limit(e, aura=False) and est.over_limit(e, aura=True) is None
+
+
+def test_own_keys_split_into_the_provider_part_and_the_decision_part(tmp_path):
+    for project in (None, str(tmp_path)):  # (without history, and with it)
+        if project:
+            write_run(tmp_path, REFERENCE)
+        e = est.estimate(project, agent="claude", model="claude-opus-5-5", fast=True)
+        parts = e["parts"]
+        assert e["own_keys"] == pytest.approx(tuple(sum(p[i] for p in parts.values()) for i in (0, 1)))
+        out = est.text(e)
+        assert "anthropic: agent $" in out and "typesafe: decisions $" in out
+
+
+def test_a_reading_model_with_no_price_is_named_and_left_out(monkeypatch):
+    monkeypatch.setenv("AUTOPILOT_HELPER_MODEL", "some-new-model")
+    e = est.estimate(None, agent="claude", model="claude-opus-5-5")
+    assert e["parts"]["reading"] is None and e["missing"] == ["some-new-model"]
+    assert e["own_keys"][1] == pytest.approx(e["parts"]["agent"][1] + e["parts"]["decision"][1])
