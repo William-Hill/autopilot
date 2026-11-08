@@ -44,6 +44,7 @@ from . import (
     aura_login,
     aura_memory,
     bridge,
+    decision,
     engines,
     memory,
     processes,
@@ -426,7 +427,7 @@ def classify(prompt, client=None):
     bills it; tested: an exploration asked for as a test in the user's own words. When Jev can't be asked, the words
     the prompt starts with decide (kind_by_words), and it is never a test. client: Jev's (by default a new one)."""
     try:
-        client = client or runtime.jev_client(warm=False)
+        client = client or decision.client(warm=False)
         answer = client.system_one(state={"request": prompt.strip()},
                                    questions={"kind": runtime.Choice(instructions=KIND_INSTRUCTIONS,
                                                                      criteria=KIND_CRITERIA)},
@@ -557,7 +558,7 @@ def go_on_aura_free(link, run, tel, report, left, game, project, asked, run_id, 
     go_on(os.path.join(codexmod.project_dir(project), "runs", run_id), report)
     agent = agents.select(run.agent_name)
     later = agent.implement(game, project, asked, run_id=run_id, say=lambda text: link.status(plain_words(text)),
-                            activity=activity, client=tel.jev(runtime.jev_client()), model=model, timeout=left,
+                            activity=activity, client=tel.jev(decision.client()), model=model, timeout=left,
                             stop=stop, steering=steering,
                             play_seconds=min(play_seconds, left) if play_seconds else play_seconds,
                             describer=tel.describer(model or agent_model(seen_by), provider=seen_by, model=named))
@@ -646,11 +647,15 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
         return asked, play_seconds
 
     try:
+        decision.provider()  # (a wrong AUTOPILOT_DECISION_PROVIDER ends the run here, with the reason)
         if aura.enabled():
             # (a kind not known yet is told to Aura as a goal: Aura bills every kind the same)
             run = start_aura_run(link, kind or "goal", (link.hello or {}).get("project") or "game", path,
                                  trace=trace, model=aura_model, disable_premium_models=disable_premium_models)
             account.note_credits(None)  # (Aura started it: the team has credits)
+    except decision.ProviderError as e:
+        report = {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved",
+                  "summary": str(e), "evidence": []}
     except aura.Refused as e:
         report = {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved",
                   "summary": e.message, "evidence": []}
@@ -700,7 +705,7 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                 started = time.time()
                 report = agent.implement(game, project, asked, run_id=run_id,
                                          say=lambda text: link.status(plain_words(text)), activity=activity,
-                                         client=tel.jev(runtime.jev_client()), model=model, timeout=timeout,
+                                         client=tel.jev(decision.client()), model=model, timeout=timeout,
                                          stop=stop, steering=steering, play_seconds=play_seconds,
                                          describer=describer, **({"desk": desk} if desk is not None else {}))
                 # A run through Aura whose agent stopped before it reported, its premium credits used up: it goes on
@@ -896,7 +901,7 @@ def cmd_run(link, args):
             game.restart()
         game.pause(False)
         trace = os.path.join(os.path.dirname(os.path.abspath(args.harness)), f"replay-{time.strftime('%H%M%S')}.jsonl")
-        rt = runtime.Runtime(game, harness, trace, client=runtime.jev_client(), max_seconds=args.seconds,
+        rt = runtime.Runtime(game, harness, trace, client=decision.client(), max_seconds=args.seconds,
                              say=link.status)
         result = rt.run()
     print(runtime.summarize(trace))
@@ -904,14 +909,26 @@ def cmd_run(link, args):
 
 
 def decision_key_missing():
-    """Why a run with the user's own keys can't start (its decision model has no key; a run through Aura needs none),
-    or None. Told to the user's own agent (`autopilot mcp`): the key goes in the file, never into its conversation."""
-    if aura.enabled() or (os.environ.get("TYPESAFE_API_KEY") or "").strip():
+    """Why a run with the user's own keys can't start (its decision model has no key; a run through Aura needs none
+    for Jev or Anthropic), or None. Told to the user's own agent (`autopilot mcp`): the key goes in the file, never
+    into its conversation."""
+    try:
+        name = decision.provider()
+    except decision.ProviderError as e:
+        return f"{e} Then call start_run again."
+    missing = decision.missing_keys(name, aura=aura.enabled())
+    if not missing:
         return None
-    return ("Autopilot needs a key for its decision model, the one that plays the game (TypeSafe: "
-            f"https://typesafe.ai). Add the line TYPESAFE_API_KEY=<the key> to {account._user_env_path()}, or enter it "
-            "in the Autopilot tab's account setup in the editor (or choose Aura there). Don't paste the key into this "
-            "conversation. Then call start_run again.")
+    if name == "jev":
+        return ("Autopilot needs a key for its decision model, the one that plays the game (TypeSafe: "
+                f"https://typesafe.ai). Add the line TYPESAFE_API_KEY=<the key> to {account._user_env_path()}, or "
+                "enter it in the Autopilot tab's account setup in the editor (or choose Aura there). Don't paste the "
+                "key into this conversation. Then call start_run again.")
+    lines = ", ".join(f"{k}=<...>" for k in missing)
+    relay = "" if name in decision.THROUGH_AURA else " (Aura's relay does not carry this provider.)"
+    return (f"Autopilot's decision model, the one that plays the game, is set to {name} "
+            f"({decision.PROVIDER_ENV}={name}) and needs {', '.join(missing)}.{relay} Add the lines {lines} to "
+            f"{account._user_env_path()}. Do not paste a key into this conversation. Then call start_run again.")
 
 
 def external_run(params):

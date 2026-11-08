@@ -178,6 +178,10 @@ class Runtime:
         self.log_before = game.log  # given back when the episode ends (probes after it log there)
         self.game.log = self.trace
         self.client = client
+        # Seconds a decision may take before its answer is forgotten (x2.5): the client's own (a slower decision
+        # model's, autopilot/decision.py), else Jev's
+        limit = getattr(client, "answer_timeout", None)
+        self.answer_limit = limit if isinstance(limit, (int, float)) and limit > 0 else JEV_TIMEOUT
         self.max_seconds = max_seconds
         self.say = say or (lambda text: None)  # progress in words (the Autopilot tab's status line)
         self.stop = stop or (lambda: False)  # an outside request to stop
@@ -262,7 +266,7 @@ class Runtime:
         for item in self.pending:
             fut = item[0]
             if not fut.done():
-                if time.monotonic() - item[1] > JEV_TIMEOUT * 2.5:
+                if time.monotonic() - item[1] > self.answer_limit * 2.5:
                     self.trace("jev_error", error="no answer in time", t=self.game.t, call=item[5]["call"])
                     self.keep_call(item, error="no answer in time")
                     continue  # forget it
