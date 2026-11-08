@@ -284,6 +284,7 @@ def text(e, before_run=False):
     ]
     if e["missing"]:
         lines.append(f"  No price for: {', '.join(e['missing'])}. Add it to autopilot/prices.json.")
+    lines.append("  Not included: frame descriptions (describe_frames), billed by the vision model's provider.")
     lines.append(f"  Prices from autopilot/prices.json (updated {e['prices_checked']}). This is a range, not a quote.")
     return "\n".join(lines)
 

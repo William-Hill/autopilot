@@ -10,6 +10,8 @@ import pytest
 from autopilot import cli
 from autopilot import estimate as est
 
+LOAD_USER_KEYS = cli.load_user_keys  # (the real one: tests/conftest.py replaces it with a no-op in every test)
+
 # The reference run: renderatl-rush 20261107-165445, 2 episodes, claude on claude-opus-5-5 fast, Aura billed 3.06 USD
 REFERENCE = {
     "run": "20261107-165445", "agent": "claude", "model": "claude-opus-5-5", "fast": True, "episodes": 2,
@@ -438,3 +440,38 @@ def test_a_reading_model_with_no_price_is_named_and_left_out(monkeypatch):
     e = est.estimate(None, agent="claude", model="claude-opus-5-5")
     assert e["parts"]["reading"] is None and e["missing"] == ["some-new-model"]
     assert e["own_keys"][1] == pytest.approx(e["parts"]["agent"][1] + e["parts"]["decision"][1])
+
+
+# -- the Codex review on William-Hill/autopilot#2 -------------------------------------------------------------------
+
+
+def test_an_aura_run_of_a_kind_not_known_yet_is_estimated_with_its_exploration_minutes(tmp_path, monkeypatch):
+    """Through Aura, the kind is known only after the run starts, and an `auto` run can become an exploration with all
+    its minutes: the limit must see those minutes."""
+    monkeypatch.setattr(cli.aura, "enabled", lambda: True)
+    monkeypatch.setattr(cli, "start_aura_run", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no game")))
+    assert run_prompt_estimates(monkeypatch, tmp_path, explore_minutes=20)["play_minutes"] == 20
+
+
+def test_the_command_line_limit_and_yes_stay_after_autopilot_env_loads(monkeypatch):
+    saved = {"AUTOPILOT_MAX_USD": "50", "AUTOPILOT_CONFIRM_COST": "1"}
+    monkeypatch.setattr(cli.account, "user_settings", lambda: dict(saved))
+    monkeypatch.setattr(cli, "CLI_SETTINGS", {"AUTOPILOT_MAX_USD": "1", "AUTOPILOT_CONFIRM_COST": "0"})
+    monkeypatch.setenv("AUTOPILOT_MAX_USD", "1")
+    monkeypatch.setenv("AUTOPILOT_CONFIRM_COST", "0")
+    LOAD_USER_KEYS()
+    assert os.environ["AUTOPILOT_MAX_USD"] == "1" and not cli.confirm_wanted()
+    monkeypatch.setattr(cli, "CLI_SETTINGS", {})
+    LOAD_USER_KEYS()  # (with no flags, autopilot.env decides)
+    assert os.environ["AUTOPILOT_MAX_USD"] == "50" and cli.confirm_wanted()
+
+
+def test_a_stop_that_comes_with_the_answer_still_refuses_the_run(terminal):
+    stops = iter([True])  # (the answer is there before the first check; the Stop came with it)
+    assert cli.ask_on_terminal(None, read=lambda q: "y", stopped=lambda: next(stops, True)) is False
+    assert cli.ask_on_terminal(None, read=lambda q: "y", stopped=lambda: False) is True
+
+
+def test_the_estimate_says_that_frame_descriptions_are_not_in_the_total():
+    e = est.estimate(None, agent="claude", model="claude-opus-5-5")
+    assert "Not included: frame descriptions (describe_frames)" in est.text(e)

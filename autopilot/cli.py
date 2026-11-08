@@ -594,9 +594,15 @@ class OverBudget(Exception):
     """A run not started: its cost estimate is above AUTOPILOT_MAX_USD (cost_check)."""
 
 
+# (settings given on the command line: autopilot.env does not replace them when it loads)
+CLI_SETTINGS = {}
+
+
 def load_user_keys():
-    """The model keys the plugins' first-run setup saved, as saved now (autopilot/account.py)."""
+    """The model keys the plugins' first-run setup saved, as saved now (autopilot/account.py), below the settings
+    given on the command line (--max-usd, --yes)."""
     account.load_user_settings()
+    os.environ.update(CLI_SETTINGS)
 
 
 def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sent=None, steering=None, kind=None,
@@ -666,7 +672,8 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
     # (not for a run the user's own agent works on: its tokens go to the user's subscription, not to a key)
     over_budget = None if desk is not None else cost_check(
         link, model=aura_model or model if aura.enabled() else model, confirm=confirm_cost,
-        play_minutes=play_minutes or (explore_minutes if kind == "explore" else None))
+        # (a kind not known yet can become an exploration below, with all its minutes: estimate it as one)
+        play_minutes=play_minutes or (explore_minutes if kind in ("explore", None) else None))
     try:
         if over_budget:
             raise OverBudget(over_budget)
@@ -950,6 +957,9 @@ def ask_on_terminal(warning=None, seconds=None, read=input, stopped=None):
                 return False
             asking.join(min(0.2, max(0.0, deadline - time.time())))
     except KeyboardInterrupt:
+        return False
+    if stopped is not None and stopped():  # (a Stop that came with the answer, or just before it)
+        print("\nStopped: the run does not start.")
         return False
     if not answer:
         print("\nNo answer: the run does not start.")
@@ -1285,9 +1295,10 @@ def main(argv=None):
 
         return mcp.main()
     if getattr(args, "max_usd", None):
-        os.environ["AUTOPILOT_MAX_USD"] = str(args.max_usd)
+        CLI_SETTINGS["AUTOPILOT_MAX_USD"] = str(args.max_usd)
     if args.cmd == "play" and args.yes:
-        os.environ["AUTOPILOT_CONFIRM_COST"] = "0"
+        CLI_SETTINGS["AUTOPILOT_CONFIRM_COST"] = "0"
+    os.environ.update(CLI_SETTINGS)
     processes.contain()
     if getattr(args, "exit_with", None):
         processes.exit_with(args.exit_with, finish=finish_after_run)
