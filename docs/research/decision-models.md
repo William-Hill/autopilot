@@ -1,0 +1,135 @@
+# Decision models other than Jev
+
+Date: 2026-11-07. Branch: `feat/pluggable-decision-model` (base `threejs-engine`).
+
+Autopilot uses TypeSafe's Jev as its decision model. Jev plays inside a harness and reads the kind of a run from
+a prompt. This note records how Jev is connected now, which other decision models exist, and the adapter on this
+branch.
+
+Key to the marks: **V** means that we read the fact in a primary source (vendor documentation, blog, or price page).
+**I** means that the fact comes from a secondary source, or that we inferred it.
+
+## 1. How Jev is connected now
+
+All calls go through one duck-typed interface, the `typesafe_sdk` client:
+`client.system_one(state, questions, **options)`.
+
+| Call site | What it sends | What it reads from the answer |
+|---|---|---|
+| `autopilot/runtime.py` `Runtime.ask` / `answers` (play, each decision) | `state` = goal, situation, options' facts, `now_doing`, `recent`, `plan`. `questions` = `{"pick": Choice(instructions, criteria={option: description})}` plus the harness's extra questions (`Harness.questions`: `Choice`, `Noul`, `Score`) | `choices["pick"].probabilities` (the switch margin compares them), else `.choice`. Extra answers: `nouls[k].noul`, `choices[k].probabilities`, `scores[k].score`. Also `r.raw` or `r.model_dump()` for the trace |
+| `autopilot/cli.py` `classify` (the kind of a run) | `state={"request": prompt}`, one `Choice` over verify / goal / explore / test, `timeout=8.0`, `retry=RetryPolicy(...)` | `choices["kind"].choice`. On any error, the first words of the prompt decide |
+| `autopilot/sandbox.py` `Sandbox._jev` (the parent, for a sandboxed child) | The questions as JSON (`model_dump`), rebuilt as `Choice` / `Noul` / `Score` | `.choice`, `.probabilities`, `.confidence`, `.noul`, `.score`, `raw` |
+| `autopilot/sandbox.py` `RemoteJev` (the child) | Sends the questions to the parent | A `SimpleNamespace` in the same shape |
+| `autopilot/telemetry.py` `CountingJev` (a wrapper) | Passes every call through | `r.model`, `r.usage.input_tokens`, `r.usage.output_tokens` |
+| `autopilot/runtime.py` `jev_client` / `_keep_warm` | `client.models.list()` every 15 s to keep the server warm | Nothing |
+
+Settings and keys:
+
+- `runtime.JEV_MODEL = "jev-1.13.0"`. `AUTOPILOT_JEV_MODEL` overrides it.
+- `runtime.JEV_TIMEOUT = 1.5`. The runtime forgets an answer after 2.5 times that value.
+- `cli.decision_key_missing` requires `TYPESAFE_API_KEY` unless the run goes through Aura.
+- `aura.py` points `TYPESAFE_BASE_URL` / `TYPESAFE_API_KEY` and `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` at the
+  relay for the run. The relay passes only TypeSafe and Anthropic traffic.
+- `account.state` shows the masked `TYPESAFE_API_KEY` as the "decision" key in the editor plugins.
+
+Three question types are in use. All three return probabilities:
+
+- **Choice**: `choice`, `confidence`, and `probabilities` per option.
+- **Noul**: `noul`, the probability of yes.
+- **Score**: `score`, the probability-weighted level, plus `probabilities` and `confidence`.
+
+## 2. The alternatives
+
+### Summary of the two claims
+
+- **Cloudflare: correct.** Cloudflare released Clef and Clef-flash on Workers AI on 2026-10-01. The blog says they
+  are "fully Jev-API compatible" (V).
+- **OpenAI: correct.** OpenAI has a Decisions API, `POST /v1/decisions`, on `gpt-6-luna`. The guide says that it
+  is "now generally available" (V).
+
+### Comparison
+
+| Candidate | API shape | Probabilities or one choice | Latency | Price | License / terms |
+|---|---|---|---|---|---|
+| **TypeSafe Jev** (the default) | `POST /v1/systemone`: `{model, state, questions}`. Noul, Choice, Score, and Box (images, 1.14) (V) | Full distributions (V) | TypeSafe publishes no figure. Cloudflare measured median 524 ms / p95 536 ms (V, a competitor's benchmark, before Jev 1.14) | $0.042 / M input tokens. Output is free (V) | No training on customer data without consent. TypeSafe can keep data for telemetry and fraud checks. The terms prohibit distillation and a "competing product" (V, MCA §2.3, §4.1) |
+| **Cloudflare Clef** / **Clef-flash** | Workers AI `/ai/run/@cf/cloudflare/clef` with `{model, state, questions}`, the Jev shape (V) | Full distributions (V) | Clef median 209 ms / p95 239 ms. Clef-flash median 39 ms / p95 122 ms (V, vendor benchmark) | Clef $0.24 / M input. Clef-flash $0.038 / M input. Output is free (V, model pages) | Open weights, Apache 2.0, on Hugging Face: self-host is possible (V). Zero data retention on Workers AI (V) |
+| **OpenAI Decisions API** | `POST /v1/decisions`: `{model: "gpt-6-luna", input, questions[]}`. Types `predicate` (returns `probability`), `choice`, `score` (V) | Full distributions (V) | "about 10x faster than the Responses API". No absolute figure (V) | $0.10 / M uncached input. Output is not charged (V) | Not checked for this endpoint. Standard OpenAI terms assumed (I) |
+| **Claude through structured outputs** (on this branch) | Messages API with `output_config.format` = JSON schema (V) | One choice natively. The Messages API has no logprobs (V). The model states probabilities: these are not calibrated (I) | Docs say only "Fastest" for Haiku 5.5. No ms figure (V). Not measured here | `claude-haiku-5-5`: $0.10 in / $0.50 out per M tokens up to 100k tokens (V) | Anthropic commercial terms. Not re-checked in this pass |
+| **OpenAI small models + logprobs** | Chat Completions / Responses with `logprobs` (I) | Distribution from token logprobs. Reasoning models reject logprobs or return them inconsistently (I) | Not published | `gpt-5-nano` $0.05 / $0.40 (V) | Standard OpenAI terms (I). The Decisions API makes this method mostly obsolete |
+| **Cerebras** | OpenAI-compatible chat, `logprobs` 0–20, JSON schema (V) | Distribution from logprobs (V) | ~1850–3000 tokens/s (V). No decision latency published | Not verified | Developer tier is "not production" (V) |
+| **Groq** | OpenAI-compatible chat | One choice only. `logprobs` returns HTTP 400 (V) | Not published | Not checked | Not checked |
+| **Google Gemini Flash-Lite** | `generateContent` with JSON schema | One choice for 3.x models: a forum reply says logprobs are no longer returned (I) | Not published | `gemini-3.5-flash-lite` $0.30 / $2.50, `gemini-2.5-flash-lite` $0.10 / $0.40 (V) | Free-tier data improves Google products (V) |
+| **Cohere `/v1/classify`** | Deprecated from 2025-09-15. Not available to new customers (V) | — | — | — | Not usable |
+
+### Sources
+
+- TypeSafe: <https://docs.typesafe.ai/api/system-one.md>, <https://docs.typesafe.ai/models.md>,
+  <https://typesafe.ai/legal/mca>
+- Cloudflare: <https://blog.cloudflare.com/clef-decision-models/>,
+  <https://developers.cloudflare.com/changelog/post/2026-10-01-clef-workers-ai/>,
+  <https://developers.cloudflare.com/workers-ai/models/clef/>,
+  <https://developers.cloudflare.com/workers-ai/models/clef-flash/>
+- OpenAI: <https://developers.openai.com/api/docs/guides/decisions>,
+  <https://developers.openai.com/api/docs/pricing>
+- Anthropic: <https://platform.claude.com/docs/en/about-claude/models/overview>,
+  <https://platform.claude.com/docs/en/about-claude/pricing>,
+  <https://platform.claude.com/docs/en/build-with-claude/structured-outputs>,
+  <https://platform.claude.com/docs/en/api/messages.md> (no "logprob" in the full reference)
+- Cerebras: <https://inference-docs.cerebras.ai/api-reference/chat-completions>
+- Groq: <https://console.groq.com/docs/openai>
+- Cohere: <https://docs.cohere.com/docs/deprecations>
+
+We read the Cloudflare blog and the OpenAI Decisions guide again on 2026-11-07 to confirm the main claims. A research
+agent read the other sources on the same day.
+
+### Discrepancies and gaps
+
+- The Clef changelog gives Clef-flash a 64K context. The Clef-flash model page gives 24,576 tokens.
+- The Cloudflare blog says that Jev has a 32k context and takes text only. TypeSafe's current docs say 64k and images.
+- All latency figures come from vendors. Nobody has measured them on Autopilot's prompts.
+- We did not check OpenAI's terms and data retention for `/v1/decisions`, or the Cerebras prices.
+
+## 3. The adapter on this branch
+
+`autopilot/decision.py` names the interface that the code already used. It adds one setting:
+
+- `AUTOPILOT_DECISION_PROVIDER` = `jev` (the default) or `anthropic`. Any other value is an error.
+- `AUTOPILOT_DECISION_MODEL` chooses the Claude model. The default is `claude-haiku-5-5`, because a decision must
+  come back in about a second.
+
+Rules of the adapter:
+
+1. `decision.client(warm)` returns the client of the chosen provider. For `jev`, it calls `runtime.jev_client`,
+   with no change to Jev's client, model, timeouts, or keep-warm thread.
+2. A provider gives the `typesafe_sdk` answer shape: `choices`, `nouls`, `scores`, `usage`, `model`, `raw`. So the
+   runtime, the sandbox, `CountingJev`, and `classify` need no change to read it.
+3. A provider can set `answer_timeout`. The runtime uses it in place of `JEV_TIMEOUT` to forget late answers.
+4. `cli.decision_key_missing` asks for the key of the chosen provider.
+
+The `anthropic` provider (`AnthropicDecider`):
+
+- It sends one Messages API call per decision. The JSON schema has one property per question.
+- A Choice gets a number per option, a Noul gets one number, and a Score gets a number per level.
+- The code normalizes the numbers to probabilities, so the switch margin in the runtime still works.
+- On Haiku models it turns thinking off. On other models it sends `effort: "low"`, because Opus 5.5 refuses
+  thinking off.
+- Through Aura, `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` already point at the relay. So this provider can work
+  through Aura with no relay change. We did not test this, and we do not know how Aura bills these calls.
+
+### Limits of the `anthropic` provider
+
+- The probabilities are numbers that the model writes. They are not calibrated like Jev's.
+- The latency is not measured. If a decision takes more than about 1 s, a harness gets fewer decisions per
+  second. Reflex options must stay in executors.
+- It does not answer `Box` questions.
+
+## 4. Recommended next providers
+
+1. **`clef`**: Workers AI takes the Jev request shape. A small HTTP client (or `TypeSafeClient` with a different
+   base URL, if the paths match) could give calibrated probabilities, open weights, and the lowest published
+   latency. The Aura relay does not pass Cloudflare traffic, so this provider works with own keys only.
+2. **`openai`**: `/v1/decisions` maps `noul` to `predicate` and `state` to `input`. The adapter must rename the
+   fields. Own keys only, for the same reason.
+
+Both give native distributions. They are better fits than an LLM with stated probabilities, but we did not verify
+them with a key, so this branch does not include them.
