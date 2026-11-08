@@ -38,7 +38,6 @@ def pick(options):
 # -- choosing the provider ---------------------------------------------------------------------------------------------
 
 def test_jev_is_the_default(monkeypatch):
-    monkeypatch.delenv(decision.PROVIDER_ENV, raising=False)
     assert decision.provider() == "jev"
     asked = []
     monkeypatch.setattr(runtime, "jev_client", lambda warm=True: asked.append(warm) or "jev")
@@ -56,7 +55,7 @@ def test_the_provider_comes_from_the_environment(monkeypatch):
 
 def test_the_anthropic_provider_makes_an_anthropic_decider(monkeypatch):
     monkeypatch.setenv(decision.PROVIDER_ENV, "anthropic")
-    monkeypatch.setenv(decision.MODEL_ENV, "claude-sonnet-5-5")
+    monkeypatch.setenv(decision.MODEL_ENVS["anthropic"], "claude-sonnet-5-5")
     import anthropic
 
     monkeypatch.setattr(anthropic, "Anthropic", lambda **k: FakeSDK({}))
@@ -68,7 +67,6 @@ def test_the_key_check_names_the_providers_key(monkeypatch):
     monkeypatch.setattr(cli.aura, "enabled", lambda: False)
     for k in ("TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
         monkeypatch.delenv(k, raising=False)
-    monkeypatch.delenv(decision.PROVIDER_ENV, raising=False)
     assert "TYPESAFE_API_KEY" in cli.decision_key_missing()
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     assert "TYPESAFE_API_KEY" in cli.decision_key_missing()  # (Jev's key is the one Jev needs)
@@ -217,7 +215,6 @@ def questions3():
 def test_clef_sends_jevs_request_to_workers_ai(monkeypatch):
     monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct")
     monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "tok")
-    monkeypatch.delenv(decision.MODEL_ENV, raising=False)
     s = FakeSession({"success": True, "errors": [], "result": CLEF_ANSWER})  # (Cloudflare's envelope)
     r = decision.ClefDecider(session=s).system_one(state={"hp": 3}, questions=questions3())
     post = s.posts[0]
@@ -232,7 +229,7 @@ def test_clef_sends_jevs_request_to_workers_ai(monkeypatch):
 
 
 def test_clef_flash_and_no_envelope(monkeypatch):
-    monkeypatch.setenv(decision.MODEL_ENV, "clef-flash")
+    monkeypatch.setenv(decision.MODEL_ENVS["clef"], "clef-flash")
     s = FakeSession(CLEF_ANSWER)
     r = decision.ClefDecider(session=s).system_one(state="s", questions=questions3(), timeout=8.0)
     assert s.posts[0]["url"].endswith("/@cf/cloudflare/clef-flash") and s.posts[0]["json"]["model"] == "clef-flash"
@@ -260,7 +257,6 @@ OPENAI_ANSWER = {"model": "gpt-6-luna", "usage": {"input_tokens": 120}, "answers
 def test_openai_asks_the_decisions_api_in_its_own_words(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "ok")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.delenv(decision.MODEL_ENV, raising=False)
     s = FakeSession(OPENAI_ANSWER)
     r = decision.OpenAIDecider(session=s).system_one(state={"hp": 3}, questions=questions3())
     post = s.posts[0]
@@ -335,19 +331,23 @@ def test_a_question_with_no_answer_is_an_error():
 
 # -- the model setting ------------------------------------------------------------------------------------------------
 
-def test_a_model_of_another_provider_is_an_error(monkeypatch):
+def test_each_provider_reads_its_own_model_setting(monkeypatch):
+    """A model left set for one provider never reaches another (as AUTOPILOT_JEV_MODEL is only Jev's)."""
     monkeypatch.setenv(decision.PROVIDER_ENV, "clef")
-    monkeypatch.setenv(decision.MODEL_ENV, "claude-sonnet-5-5")
-    with pytest.raises(decision.ProviderError, match="not a model of clef"):
-        decision.check()
-    with pytest.raises(decision.ProviderError):
-        decision.client()
-    monkeypatch.setattr(cli.aura, "enabled", lambda: False)
-    assert "not a model of clef" in cli.decision_key_missing()
-    monkeypatch.setenv(decision.MODEL_ENV, "clef-flash")
-    assert decision.check() == "clef" and decision.client().model == "clef-flash"
-    monkeypatch.setenv(decision.PROVIDER_ENV, "jev")  # (Jev's model is AUTOPILOT_JEV_MODEL: this one is not read)
-    assert decision.check() == "jev"
+    monkeypatch.setenv(decision.MODEL_ENVS["anthropic"], "claude-sonnet-5-5")
+    assert decision.client().model == "clef"
+    monkeypatch.setenv(decision.MODEL_ENVS["clef"], "clef-flash")
+    assert decision.client().model == "clef-flash"
+    monkeypatch.setenv(decision.PROVIDER_ENV, "openai")
+    assert decision.client().model == decision.OPENAI_MODEL
+
+
+def test_a_wrong_provider_says_where_to_correct_it(monkeypatch, tmp_path):
+    monkeypatch.setenv(decision.PROVIDER_ENV, "claude")
+    with pytest.raises(decision.ProviderError, match="Correct the line in .*autopilot.env"):
+        decision.provider()
+    why = cli.decision_key_missing()
+    assert "use one of jev, anthropic, clef, openai" in why and why.endswith("Then call start_run again.")
 
 
 def test_each_http_thread_keeps_its_own_session():
@@ -362,6 +362,17 @@ def test_each_http_thread_keeps_its_own_session():
 
 
 # -- the runtime and the sandbox take every provider -----------------------------------------------------------------
+
+def crate_runtime(client, tmp_path, **kw):
+    """A runtime on the fake crate game of tests/test_autopilot.py."""
+    from test_autopilot import CrateHarness, FakeLink
+
+    from autopilot.kit.game import Game
+
+    game = Game(FakeLink())
+    game.look = {"x": 0.1, "y": 0.1}
+    return runtime.Runtime(game, CrateHarness(), str(tmp_path / "t.jsonl"), client=client, **kw)
+
 
 class Picker:
     """Answers for each provider's API: the option named `likes` when offered, else the first."""
@@ -408,18 +419,12 @@ class PickingSDK(FakeSDK):
 
 @pytest.mark.parametrize("name", ["anthropic", "clef", "openai"])
 def test_the_runtime_plays_with_each_provider(name, tmp_path):
-    from test_autopilot import CrateHarness, FakeLink
-
-    from autopilot.kit.game import Game
-
-    game = Game(FakeLink())
-    game.look = {"x": 0.1, "y": 0.1}
     if name == "anthropic":
         client = decision.AnthropicDecider(sdk=PickingSDK("open_crate"))
     else:
         cls = decision.ClefDecider if name == "clef" else decision.OpenAIDecider
         client = cls(session=PickingSession(getattr(Picker("open_crate"), name)))
-    rt = runtime.Runtime(game, CrateHarness(), str(tmp_path / "t.jsonl"), client=client, max_seconds=20)
+    rt = crate_runtime(client, tmp_path, max_seconds=20)
     assert rt.answer_limit == client.answer_timeout
     res = rt.run()
     assert res["status"]["state"] == "done", res
@@ -427,29 +432,20 @@ def test_the_runtime_plays_with_each_provider(name, tmp_path):
 
 
 def test_the_runtime_counts_a_providers_errors(tmp_path):
-    from test_autopilot import CrateHarness, FakeLink
-
-    from autopilot.kit.game import Game
-
-    game = Game(FakeLink())
-    game.look = {"x": 0.1, "y": 0.1}
     client = decision.ClefDecider(session=FakeSession({"errors": ["Authentication error"]}, status=401))
-    rt = runtime.Runtime(game, CrateHarness(), str(tmp_path / "t.jsonl"), client=client, max_seconds=2)
+    rt = crate_runtime(client, tmp_path, max_seconds=2)
     rt.run()
     assert rt.errors["jev: RuntimeError"] >= 1
 
 
 def test_jev_keeps_jevs_answer_limit(tmp_path):
-    from test_autopilot import CrateHarness, FakeJev, FakeLink
+    from test_autopilot import FakeJev
 
-    from autopilot.kit.game import Game
-
-    rt = runtime.Runtime(Game(FakeLink()), CrateHarness(), str(tmp_path / "t.jsonl"), client=FakeJev("x"))
-    assert rt.answer_limit == runtime.JEV_TIMEOUT
+    assert crate_runtime(FakeJev("x"), tmp_path).answer_limit == runtime.JEV_TIMEOUT
+    assert crate_runtime(sandbox.RemoteJev(link=None), tmp_path).answer_limit == runtime.JEV_TIMEOUT
 
 
 def test_the_sandboxed_runtime_gets_the_providers_answer_limit():
     """The child plays with RemoteJev: it carries the parent's answer_timeout (sandbox init), else Jev's applies."""
     assert sandbox.RemoteJev(link=None, answer_timeout=3.0).answer_timeout == 3.0
-    assert not hasattr(sandbox.RemoteJev(link=None), "answer_timeout")
-    assert not hasattr(sandbox.RemoteJev(link=None, answer_timeout=None), "answer_timeout")
+    assert sandbox.RemoteJev(link=None).answer_timeout is None  # (the runtime then uses JEV_TIMEOUT)

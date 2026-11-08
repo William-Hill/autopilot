@@ -666,7 +666,7 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
         return asked, play_seconds
 
     try:
-        decision.check()  # (a wrong decision provider or model setting ends the run here, with the reason)
+        decision.provider()  # (a wrong AUTOPILOT_DECISION_PROVIDER ends the run here, with the reason)
         if aura.enabled():
             # (a kind not known yet is told to Aura as a goal: Aura bills every kind the same)
             run = start_aura_run(link, kind or "goal", (link.hello or {}).get("project") or "game", path,
@@ -675,7 +675,7 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
             account.note_credits(None)  # (Aura started it: the team has credits)
     except decision.ProviderError as e:
         report = {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved",
-                  "summary": f"{e}. Correct the line in {account._user_env_path()}.", "evidence": []}
+                  "summary": str(e), "evidence": []}
     except aura.Refused as e:
         report = {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved",
                   "summary": e.message, "evidence": []}
@@ -934,9 +934,9 @@ def decision_key_missing():
     for Jev or Anthropic), or None. Told to the user's own agent (`autopilot mcp`): the key goes in the file, never
     into its conversation."""
     try:
-        name = decision.check()
+        name = decision.provider()
     except decision.ProviderError as e:
-        return f"{e}. Correct the line in {account._user_env_path()}, then call start_run again."
+        return f"{e} Then call start_run again."
     missing = decision.missing_keys(name, aura=aura.enabled())
     if not missing:
         return None
