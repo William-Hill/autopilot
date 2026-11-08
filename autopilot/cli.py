@@ -581,6 +581,11 @@ def close_game(link):
         print(f"note: couldn't close the game: {e}")
 
 
+def refused(kind, words):
+    """The report of a run that did not start: words say why."""
+    return {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved", "summary": words, "evidence": []}
+
+
 class OverBudget(Exception):
     """A run not started: its cost estimate is above AUTOPILOT_MAX_USD (cost_check)."""
 
@@ -665,14 +670,12 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                                  trace=trace, model=aura_model, disable_premium_models=disable_premium_models)
             account.note_credits(None)  # (Aura started it: the team has credits)
     except aura.Refused as e:
-        report = {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved",
-                  "summary": e.message, "evidence": []}
+        report = refused(kind, e.message)
         if e.code == "NO_CREDITS":  # (the plugins' chat page and Settings say so until the team has credits again)
             account.note_credits(e.message)
             credits_refused = True
     except OverBudget as e:
-        report = {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved", "summary": str(e),
-                  "evidence": []}
+        report = refused(kind, str(e))
     else:
         with run or contextlib.nullcontext(), contextlib.ExitStack() as setup:
             if not kind:
@@ -884,12 +887,11 @@ def cmd_estimate(args):
 def cost_check(link, model=None, play_minutes=None, confirm=None):
     """Before a run: its cost estimate, printed and told to the plugin. Returns the words that refuse the run when its
     high estimate is above AUTOPILOT_MAX_USD and confirm() (the user, asked) does not allow it; else None. An
-    estimate that fails never stops a run. Through Aura, the agent is Claude Code (Aura's usual agent) and the model is
+    estimate that fails never stops a run. Through Aura, the agent is Aura's (estimate.agent_setup) and the model is
     the one picked in Aura's chat, when there is one."""
     try:
         through_aura = aura.enabled()
-        e = costmod.estimate(codexmod.project_dir(codexmod.project_of(link.hello)), model=model,
-                             agent="claude" if through_aura else None, minutes=play_minutes)
+        e = costmod.estimate(codexmod.project_dir(codexmod.project_of(link.hello)), model=model, minutes=play_minutes)
         print(costmod.text(e, before_run=True))
         with contextlib.suppress(Exception):
             link.status(costmod.summary(e, aura=through_aura))
@@ -1224,14 +1226,6 @@ def main(argv=None):
         return mcp.main()
     if getattr(args, "max_usd", None):
         os.environ["AUTOPILOT_MAX_USD"] = str(args.max_usd)
-    if args.cmd == "estimate" or getattr(args, "estimate", False):  # (no plugin, no account, no process started)
-        from dotenv import load_dotenv
-
-        load_dotenv(os.path.join(HERE, ".env"))
-        load_user_keys()
-        if getattr(args, "aura", False):
-            aura.use_default()
-        return cmd_estimate(args)
     processes.contain()
     if getattr(args, "exit_with", None):
         processes.exit_with(args.exit_with, finish=finish_after_run)
@@ -1256,6 +1250,8 @@ def main(argv=None):
         return aura_login.main_login(server) if args.cmd == "login" else aura_login.main_logout(server)
     if args.cmd == "codex":
         return cmd_codex(args)
+    if args.cmd == "estimate" or getattr(args, "estimate", False):  # (no plugin connects, no run starts)
+        return cmd_estimate(args)
     if args.cmd == "connect":
         from . import connect
 

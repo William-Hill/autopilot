@@ -29,7 +29,7 @@ from .session import (
     SECRET,
     TOOL_SPECS,
     WRITING,
-    fast_mode,
+    fast_for,
     finish,
     first_message,
     open_session,
@@ -47,7 +47,7 @@ PROMPT_ON_COMMAND_LINE = 30000
 def fast_settings(model):
     """The Claude Code settings that turn fast mode on for this model (an Opus one, unless AUTOPILOT_FAST=0:
     session.fast_mode), or None."""
-    return '{"fastMode": true}' if fast_mode() and "opus" in str(model).lower() else None
+    return '{"fastMode": true}' if fast_for(model) else None
 
 
 def prompt_option(system, windows=os.name == "nt"):

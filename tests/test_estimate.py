@@ -143,6 +143,10 @@ def test_estimate_command_prints_and_starts_nothing(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(cli, "load_user_keys", lambda: None)  # (not this machine's autopilot.env)
     monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
     monkeypatch.setattr(cli.aura, "enabled", lambda: False)
+    for name in ("contain", "keep_responsive"):
+        monkeypatch.setattr(cli.processes, name, lambda: None)
+    for name in ("fix_at_start", "follow_preferences"):
+        monkeypatch.setattr(cli.account, name, lambda: None)
     assert cli.main(["estimate", "--name", "mygame", "--agent", "claude", "--model", "claude-opus-5-5"]) == 0
     out = capsys.readouterr().out
     assert "Project: mygame (1 earlier run(s) with cost data)" in out

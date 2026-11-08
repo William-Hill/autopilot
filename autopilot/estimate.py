@@ -23,7 +23,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PRICES = os.path.join(HERE, "prices.json")
 TOKEN_FIELDS = ("input", "output", "cache_read", "cache_write")
 # The agent's provider when AUTOPILOT_AGENT names no other (agents/__init__.py: claude is Anthropic, codex OpenAI)
-AGENT_PROVIDERS = {"claude": "anthropic", "codex": "openai"}
 HISTORY_RUNS = 10  # the newest earlier runs the estimate reads (a run's traces can be large)
 
 
@@ -71,10 +70,10 @@ def usage_units(usage, table):
     """A reading_usage in units (each model's cost over its own input price); None when a model has no price."""
     units = 0.0
     for model, tokens in (usage or {}).items():
-        cost = usage_usd({model: tokens}, table)
-        if cost is None:
+        row = llm_price(model, table)
+        if not row:
             return None
-        units += cost / llm_price(model, table)["input"]
+        units += sum((tokens.get(k) or 0) * row.get(k, 0.0) for k in TOKEN_FIELDS) / 1e6 / row["input"]
     return units
 
 
@@ -103,10 +102,11 @@ def decision_model():
 # -- earlier runs ------------------------------------------------------------------------------------------------------
 
 def _trace_numbers(run_dir):
-    """(decisions, seconds of play) per episode, from the run's trace<n>.jsonl files."""
+    """(decisions, seconds of play) per episode, from the run's trace<n>.jsonl files. The seconds of play are the last
+    game time less the first, as telemetry.episode_spans has them (read here in the same pass as the decisions)."""
     out = []
     for path in sorted(glob.glob(os.path.join(run_dir, "trace*.jsonl"))):
-        decisions, last_t = 0, 0.0
+        decisions, first_t, last_t = 0, None, 0.0
         try:
             with open(path, encoding="utf-8") as f:
                 for line in f:
@@ -117,16 +117,17 @@ def _trace_numbers(run_dir):
                     if rec.get("kind") == "decision":
                         decisions += 1
                     if isinstance(rec.get("t"), (int, float)):
-                        last_t = max(last_t, float(rec["t"]))
+                        first_t = float(rec["t"]) if first_t is None else first_t
+                        last_t = float(rec["t"])
         except OSError:
             continue
-        out.append((decisions, last_t))
+        out.append((decisions, max(0.0, last_t - (first_t or 0.0))))
     return out
 
 
 def history(project_dir, table):
-    """The project's earlier runs that have cost data, newest first: one dict per run with the agent, model, fast
-    mode, episodes, and per-episode agent units, reading units, decisions and seconds of play (None where unknown)."""
+    """The project's newest earlier runs that have cost data, newest first: one dict per run with the agent, episodes,
+    and per-episode agent units, reading units, decisions and seconds of play (None where unknown)."""
     runs = []
     for report in sorted(glob.glob(os.path.join(project_dir, "runs", "*", "report.json")), reverse=True):
         if len(runs) == HISTORY_RUNS:
@@ -144,8 +145,7 @@ def history(project_dir, table):
         reading = usage_units(r.get("reading_usage"), table)
         runs.append({
             "run": r.get("run") or os.path.basename(os.path.dirname(report)),
-            "agent": r.get("agent"), "model": r.get("model"), "fast": bool(r.get("fast")),
-            "episodes": episodes, "cost_usd": r["cost_usd"],
+            "agent": r.get("agent"), "episodes": episodes,
             "agent_units": r["cost_usd"] / price / episodes if price else None,
             "reading_units": reading / episodes if reading is not None else None,
             "decisions": statistics.mean(d for d, _ in traces) if traces else None,
@@ -166,25 +166,18 @@ def spread(values, prior):
 # -- the estimate ------------------------------------------------------------------------------------------------------
 
 def agent_setup(agent=None, model=None, fast=None):
-    """The agent, its provider, its model and whether fast mode is on, as a run would pick them now."""
-    from .agents import DEFAULT
-    from .agents.session import MODELS, fast_mode
+    """The agent, its provider, its model and whether fast mode is on, as a run would pick them now: through Aura,
+    Aura's agent (aura.AGENT), else AUTOPILOT_AGENT's (agents.select)."""
+    from . import agents, aura
+    from .agents import session
 
-    agent = (agent or os.environ.get("AUTOPILOT_AGENT") or DEFAULT).strip().lower()
-    provider = AGENT_PROVIDERS.get(agent)
-    if provider is None:
-        provider = (os.environ.get("AUTOPILOT_OPENCODE_PROVIDER") or "").strip().lower() or "anthropic"
-    model = model or (os.environ.get("AUTOPILOT_MODEL") or "").strip() or MODELS.get(provider) or MODELS["anthropic"]
+    agent = (agent or (aura.AGENT if aura.enabled() else None) or os.environ.get("AUTOPILOT_AGENT")
+             or agents.DEFAULT).strip().lower()
+    provider = getattr(agents.select(agent), "current_provider", lambda: "anthropic")()  # (as cli.run_prompt asks)
+    model = model or session.model(provider)
     if fast is None:
-        fast = fast_mode() and "opus" in model.lower() and agent != "codex"
+        fast = agent != "codex" and session.fast_for(model)  # (Codex has no fast mode)
     return agent, provider, model, bool(fast)
-
-
-def helper_model(provider, agent_model):
-    """The reading model a run uses (llm.Model's choice)."""
-    from .llm import HELPER
-
-    return (os.environ.get("AUTOPILOT_HELPER_MODEL") or "").strip() or HELPER.get(provider) or agent_model
 
 
 def estimate(project_dir=None, agent=None, model=None, fast=None, episodes=None, minutes=None, table=None):
@@ -192,6 +185,8 @@ def estimate(project_dir=None, agent=None, model=None, fast=None, episodes=None,
     way to pay ("own_keys", "aura"). A part with no price is None, and `missing` says which price to add."""
     table = table or prices()
     priors = table["priors"]
+    from .llm import helper_model
+
     agent, provider, model, fast = agent_setup(agent, model, fast)
     helper = helper_model(provider, model)
     decision_provider, decision = decision_model()
@@ -201,12 +196,11 @@ def estimate(project_dir=None, agent=None, model=None, fast=None, episodes=None,
     other_agents = bool(runs) and not same
     runs = same or runs
 
-    seconds = spread([r["play_seconds"] for r in runs], [priors["play_seconds_per_episode"]] * 2)
     if episodes:
         planned, basis = int(episodes), "asked"
     elif minutes:
-        per_episode = statistics.mean(seconds)
-        planned, basis = max(1, math.ceil(float(minutes) * 60 / per_episode)), f"{minutes:g} minutes of play"
+        seconds = statistics.mean(spread([r["play_seconds"] for r in runs], [priors["play_seconds_per_episode"]] * 2))
+        planned, basis = max(1, math.ceil(float(minutes) * 60 / seconds)), f"{minutes:g} minutes of play"
     elif runs:
         planned, basis = max(1, round(statistics.median(r["episodes"] for r in runs))), "earlier runs"
     else:
@@ -214,20 +208,14 @@ def estimate(project_dir=None, agent=None, model=None, fast=None, episodes=None,
 
     missing = []
     parts = {}
-    price = input_price(model, table, fast)
-    if price is None:
-        missing.append(model)
-        parts["agent"] = None
-    else:
-        units = spread([r["agent_units"] for r in runs], priors["agent_units_per_episode"])
-        parts["agent"] = tuple(u * price * planned for u in units)
-    helper_price = input_price(helper, table)
-    if helper_price is None:
-        missing.append(helper)
-        parts["reading"] = None
-    else:
-        units = spread([r["reading_units"] for r in runs], priors["reading_units_per_episode"])
-        parts["reading"] = tuple(u * helper_price * planned for u in units)
+    for part, name, price in (("agent", model, input_price(model, table, fast)),
+                              ("reading", helper, input_price(helper, table))):
+        if price is None:
+            missing.append(name)
+            parts[part] = None
+        else:
+            units = spread([r[f"{part}_units"] for r in runs], priors[f"{part}_units_per_episode"])
+            parts[part] = tuple(u * price * planned for u in units)
     decisions = spread([r["decisions"] for r in runs], priors["decisions_per_episode"])
     cost = DECISION_COSTS.get(decision_provider)
     parts["decision"] = cost(decision, tuple(d * planned for d in decisions), tuple(priors["decision_tokens"]),
@@ -297,9 +285,9 @@ def limit():
     return value if value > 0 else None
 
 
-def over_limit(e, aura=False, max_usd=None):
+def over_limit(e, aura=False):
     """The words that say the run's high estimate is above the limit, or None when it is not (or there is no limit)."""
-    max_usd = limit() if max_usd is None else max_usd
+    max_usd = limit()
     pair = e["aura"] if aura else e["own_keys"]
     if max_usd is None or pair is None or pair[1] <= max_usd:
         return None

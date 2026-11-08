@@ -344,6 +344,11 @@ def fast_mode():
     return (os.environ.get("AUTOPILOT_FAST") or "").strip() != "0"
 
 
+def fast_for(model):
+    """Whether this model plays in fast mode: an Opus model, unless AUTOPILOT_FAST=0 (fast_mode)."""
+    return fast_mode() and "opus" in str(model).lower()
+
+
 def default_timeout():
     """One request's whole budget, in seconds, when the run doesn't give one: AUTOPILOT_TIMEOUT as the environment says
     it now (autopilot.env is loaded before every run, after this module is imported), else TIMEOUT."""
