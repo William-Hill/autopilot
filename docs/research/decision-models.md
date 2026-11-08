@@ -177,3 +177,35 @@ Not verified:
 - No game run with a provider other than Jev. The runtime tests use stand-in APIs.
 - No run through Aura with the `anthropic` provider.
 - The first call of each provider was slower (0.77–2.23 s), probably from connection setup.
+
+## 5. Whole-game playtest (2026-11-07)
+
+We played RenderATL Rush from the title screen to the credits: every stage, the 3D Connector Sprint, and the
+bosses, with the 3D assets on (`main` at `b060a24` with `?render3d=1`). The game got a dev-only copy of the Phaser
+bridge (`?autopilot=1`, branch `feat/autopilot-bridge` in the game repo). The Claude Code agent (`claude-opus-5-5`,
+fast mode off) wrote one harness with Jev. Then `autopilot run` replayed that same harness once with each provider,
+in a Chromium window with background throttling off. No call went through Aura.
+
+| Provider | Result | Play time to the credits | Decisions | Latency, median | Hits / lives lost | Errors |
+|---|---|---|---|---|---|---|
+| `jev` | Reached the credits | 178.5 s | 187 | 0.14 s | 3 / 2 (Vendor Hall scope, Main Stage projectile) | 0 |
+| `clef` | Reached the credits | 178.4 s | 193 | 0.34 s | 2 / 2 (Main Stage projectile, boss) | 0 |
+| `openai` | Reached the credits | 186.0 s | 203 | 0.22 s | 2 / 2 (Main Stage projectile, boss) | 0 |
+| `anthropic` | Reached the credits | 197.4 s | 189 | 0.86 s | 2 / 2 (Main Stage projectile, boss) | 1 timeout |
+
+What this shows:
+
+- All four providers work end to end in a real game: the runtime, the harness questions, and the answer shapes.
+- The harness does most of the play (executors steer, jump and fire every tick). The decision model chooses
+  between options. So one run per provider cannot rank the models: the differences are small and can come from
+  timing.
+- `anthropic` was the slowest (0.86 s median, 1 call timed out) and took the most time to the credits.
+
+What went wrong on the way (setup, not providers):
+
+- In the hidden in-app browser pane, the browser stopped the game's frame loop, and the game froze at
+  "Loading STAGE 2". In the unthrottled Chromium window, the same hand-off worked.
+- The first `restart` hook of the bridge left the game with no scene, and then with the game-over screen on top of
+  the menu. The hook now stops the other scenes and calls the game's own `renderRushBackToTitle`.
+- The two agent runs cost $2.17 (stopped by the freeze) and an unreported amount (the 30-minute limit ended the
+  second run before its report).
