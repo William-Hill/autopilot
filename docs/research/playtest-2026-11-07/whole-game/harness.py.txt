@@ -1,0 +1,577 @@
+"""RenderATL Rush: the whole campaign from the title screen, keyboard only, Jev choosing the stance."""
+import math
+from autopilot.kit import *
+
+STAGE_NAMES = ["Airport Arrival", "Connector Sprint", "Badge Pickup", "Vendor Hall", "Main Stage", "Afterparty Sprint"]
+OBJ = [("Spec cards", 7, "specCards"), ("Driving", None, None), ("Gates cleared", 5, "gatesCleared"),
+       ("Blockers punched", 5, "blockersPunched"), ("Distance", 3800, None), ("Clean streak", 2600, "streakDistance")]
+
+
+def _ok(v):
+    return None if isinstance(v, Exception) else v
+
+
+def _clamp(v, a, b):
+    return max(a, min(b, v))
+
+
+# ---------- the city route (a copy of src/sim/modes/city-driving.js) ----------
+EXT = 800
+EXIT_START = 260 + EXT
+ROUTE = [dict(x=0.0, y=7.0, z=float(EXT), s=0.0, h=0.0, w=18.0)]
+
+
+def _section(length, frm, to, endY, width):
+    startY = ROUTE[-1]["y"]
+    count = math.ceil(length / 6)
+    step = length / count
+    for i in range(1, count + 1):
+        prev = ROUTE[-1]
+        hm = frm + (to - frm) * (i - .5) / count
+        ROUTE.append(dict(x=prev["x"] + math.sin(hm) * step, z=prev["z"] - math.cos(hm) * step,
+                          y=startY + (endY - startY) * i / count, s=prev["s"] + step,
+                          h=frm + (to - frm) * i / count, w=width))
+
+
+P2 = math.pi / 2
+_section(EXIT_START, 0, 0, 7, 18)
+_section(86.4, 0, P2, 0, 11)
+_section(165, P2, P2, 0, 16)
+_section(28.3, P2, 0, 0, 18)
+_section(150, 0, 0, 0, 16)
+_section(28.3, 0, -P2, 0, 18)
+_section(145, -P2, -P2, 0, 16)
+for p in ROUTE:
+    local = p["s"] - EXT
+    t = _clamp((local - 180) / 80, 0, 1)
+    p["x"] += 6 * t * t * (3 - 2 * t)
+    if 180 < local < 260:
+        p["h"] += math.atan(36 * t * (1 - t) / 80)
+    if 180 < local <= 260:
+        p["w"] = 18 - 7 * t
+ROUTE_LEN = ROUTE[-1]["s"]
+TURNS = [(EXIT_START, 346.4 + EXT, 22), (511.4 + EXT, 539.7 + EXT, 11), (689.7 + EXT, 718 + EXT, 11)]
+OBSTACLES = [(170, -4.8), (340, 4.8), (520, -4.8), (690, 4.8), (800, -5.2), (1235, -5), (1430, 5), (1550, -5)]
+GATES = [s + EXT for s in (235, 420, 570, 740)]
+
+
+def sample(s):
+    s = _clamp(s, 0, ROUTE_LEN)
+    i = 1
+    while i < len(ROUTE) - 1 and ROUTE[i]["s"] < s:
+        i += 1
+    a, b = ROUTE[i - 1], ROUTE[i]
+    t = (s - a["s"]) / (b["s"] - a["s"])
+    return dict(x=a["x"] + (b["x"] - a["x"]) * t, z=a["z"] + (b["z"] - a["z"]) * t,
+                h=a["h"] + (b["h"] - a["h"]) * t, w=b["w"], s=s)
+
+
+_end = sample(ROUTE_LEN - 15)
+DEST = (_end["x"], _end["z"] - 6)
+
+
+def point_at(s, off):
+    p = sample(s)
+    return p["x"] + math.cos(p["h"]) * off, p["z"] + math.sin(p["h"]) * off
+
+
+def wrap(a):
+    return math.atan2(math.sin(a), math.cos(a))
+
+
+class RushHarness(Harness):
+    goal = ("Play RenderATL Rush from the title screen to the end credits: start a run, clear all 6 stages in order "
+            "(run right, jump hazards, RENDER blockers with J, collect what each stage objective needs; Stage 2 is a "
+            "drive: exit the Connector, drive downtown and park at RenderATL before the clock runs out; beat the "
+            "Main Stage boss) without losing all lives")
+    tempo = 1.0
+    tick_hz = 15.0
+    switch_margin = 0.2
+    stall_seconds = 90
+    step_seconds = 0
+
+    def setup(self, game):
+        self.hits = []
+        self.last_lives = None
+        self.last_hits = None
+        self.scene_log = []
+        self.last_scene = None
+        self.max_stage = 0
+        self.drive_log = []
+        self.played = False
+        game.release_all()
+
+    def scenes(self, game):
+        n = _ok(game.batch([lambda: game.get("scenes", "length")])[0]) or 0
+        vals = game.batch([(lambda i=i: game.get("scenes", str(i))) for i in range(n)])
+        return [v for v in vals if isinstance(v, str)]
+
+    # ---------------- observation ----------------
+    def observe(self, game):
+        scenes = self.scenes(game)
+        scene = ",".join(scenes)
+        if scene != self.last_scene:
+            self.scene_log.append((round(game.t, 1), scene))
+            self.last_scene = scene
+        obs = {"scene": scene, "_scenes": scenes}
+        simscene = _ok(game.batch([lambda: game.get("sim", "scene")])[0]) if any(
+            s in scenes for s in ("stage", "driving3d", "driving")) else None
+        if simscene in ("driving3d", "driving") and ("driving3d" in scenes or "driving" in scenes):
+            fields = ["city", "lives", "status", "raceTimeLeftMs", "lastFailure", "runStats.hits", "lostReason"]
+            v = [_ok(x) for x in game.batch([(lambda f=f: game.get("sim", "state." + f)) for f in fields])]
+            c = v[0] or {}
+            obs["_race"] = True
+            obs["_city"] = c
+            obs["_status"] = v[2]
+            self.max_stage = max(self.max_stage, 1)
+            obs.update({"stage": "2/6 Connector Sprint (drive downtown, park at RenderATL)",
+                        "route_progress_m": f"{int(c.get('progress') or 0)}/{int(ROUTE_LEN)}",
+                        "route_gates": f"{c.get('checkpoint')}/4",
+                        "lives": v[1], "race_status": v[2],
+                        "time_left_s": round((v[3] or 0) / 1000, 1),
+                        "speed_mps": round(c.get("velocity") or 0, 1)})
+            nxt = next((t for t in TURNS if (c.get("progress") or 0) < t[1]), None)
+            if nxt:
+                obs["next_turn_in_m"] = int(nxt[0] - (c.get("progress") or 0))
+            self._track_hits(game, v[1], v[5], "Connector Sprint (drive)", int(c.get("progress") or 0), [],
+                             v[4])
+            return obs
+        if "stage" not in scenes or simscene != "stage":
+            labels = []
+            try:
+                labels = [t.get("label") for t in (game.view().get("visible") or [])
+                          if t.get("label") and len(str(t.get("label"))) < 90][:8]
+            except Exception:
+                pass
+            obs["screen_texts"] = labels
+            return obs
+        fields = ["player", "obstacles", "enemies", "enemyProjectiles", "collectibles", "approvedBadges", "lives",
+                  "status", "stageIndex", "stageDistance", "objectiveProgress", "hairCharge", "boss",
+                  "hasApprovedBadge", "runStats.hits", "speed", "lastFailure"]
+        vals = game.batch([(lambda f=f: game.get("sim", "state." + f)) for f in fields])
+        st = {f: _ok(v) for f, v in zip(fields, vals)}
+        obs["_st"] = st
+        idx = st["stageIndex"] or 0
+        self.max_stage = max(self.max_stage, idx)
+        p = st["player"] or {}
+        front = p.get("x", 0) + p.get("width", 64)
+        near = [f"{(o.get('type') or o.get('kind'))}@{int(o.get('x', 0) - front)}"
+                for o in (st["obstacles"] or []) + (st["enemies"] or []) + (st["enemyProjectiles"] or [])
+                if abs(o.get("x", 0) - p.get("x", 0)) < 300]
+        b = st["boss"] or {}
+        self._track_hits(game, st["lives"], st["runStats.hits"], STAGE_NAMES[idx] if idx < 6 else idx,
+                         int(st["stageDistance"] or 0), near, st.get("lastFailure"),
+                         b.get("phase") if b.get("active") else None)
+        name, target, key = OBJ[idx] if idx < 6 else ("?", None, None)
+        prog = st["objectiveProgress"] or {}
+        cur = prog.get(key) if key else int(st["stageDistance"] or 0)
+        obs.update({
+            "stage": f"{idx + 1}/6 {STAGE_NAMES[idx] if idx < 6 else ''}",
+            "objective": f"{name} {int(cur or 0)}/{target}",
+            "distance_run": int(st['stageDistance'] or 0),
+            "lives": st["lives"], "hits_taken": len(self.hits), "hair_charge": f"{st['hairCharge']}/5",
+            "holding_badge": bool(st["hasApprovedBadge"]),
+        })
+
+        def ahead(items, label):
+            best = None
+            for o in items or []:
+                if o.get("dying"):
+                    continue
+                gap = o.get("x", 0) - front
+                if gap < -30:
+                    continue
+                if best is None or gap < best[0]:
+                    best = (gap, o)
+            if not best:
+                return None
+            o = best[1]
+            dd = {"what": o.get("type") or o.get("kind") or label, "gap_px": int(best[0])}
+            if o.get("state"):
+                dd["state"] = o["state"]
+            return dd
+        obs["next_obstacle"] = ahead(st["obstacles"], "obstacle")
+        obs["next_enemy"] = ahead(st["enemies"], "enemy")
+        obs["next_projectile"] = ahead(st["enemyProjectiles"], "projectile")
+        obs["next_spec_card"] = ahead(st["collectibles"], "spec card")
+        obs["next_badge"] = ahead(st["approvedBadges"], "badge")
+        obs["boss"] = ({"phase": b.get("phase"), "hp": b.get("hp"), "clarity": f"{b.get('clarity')}"}
+                       if b.get("active") else ("defeated" if b.get("defeated") else None))
+        return obs
+
+    def _track_hits(self, game, lives, hits, stage, dist, near, why=None, boss_phase=None):
+        if isinstance(lives, (int, float)) and self.last_lives is not None:
+            if lives < self.last_lives or (isinstance(hits, (int, float)) and hits > (self.last_hits or 0)):
+                self.hits.append({"t": round(game.t, 1), "stage": stage, "distance": dist, "lives_left": lives,
+                                  "life_lost": lives < self.last_lives, "cause": why, "near": near,
+                                  "boss_phase": boss_phase})
+        if isinstance(lives, (int, float)):
+            self.last_lives = lives
+        if isinstance(hits, (int, float)):
+            self.last_hits = hits
+
+    # ---------------- options ----------------
+    def options(self, obs):
+        if obs.get("_race"):
+            if obs.get("_status") != "playing":
+                return [Option("wait_results", "Wait for the drive's result screen", lambda g, o: wait(g, 1.0),
+                               max_seconds=3)]
+            return [Option("drive_fast", "Follow the route at full pace (up to 38 m/s on the highway), slowing for "
+                           "corners, steering around traffic and roadworks",
+                           lambda g, o: self.driver(g, cap=38), max_seconds=6,
+                           effect=lambda a, b: self._drive_prog(a, b)),
+                    Option("drive_careful", "Follow the route at a safer pace (up to 26 m/s), more room to dodge "
+                           "traffic and roadworks",
+                           lambda g, o: self.driver(g, cap=26), max_seconds=6,
+                           effect=lambda a, b: self._drive_prog(a, b)),
+                    Option("reset_to_checkpoint", "Press R to put the car back on the route at the last gate "
+                           "(costs 2 s): only when stuck, facing the wrong way or off the route",
+                           lambda g, o: self.tap(g, "R", 0.5), max_seconds=3,
+                           effect=lambda a, b: None)]
+        if obs.get("_st") is None and "gameover" in obs.get("_scenes", []):
+            return [Option("finish_results", "Results screen: confirm the initials (Enter x3), then Space to start "
+                           "a new run from the leaderboard", self.results, max_seconds=12,
+                           effect=lambda a, b: a.get("scene") != b.get("scene") or None),
+                    Option("confirm", "Press Enter once (fills the next initial)",
+                           lambda g, o: self.tap(g, "Enter"), max_seconds=4, effect=lambda a, b: None)]
+        if obs.get("_st") is None:
+            return [Option("confirm", "Press Enter to start / advance this screen (title, cutscene line, stage results)",
+                           lambda g, o: self.tap(g, "Enter"), max_seconds=4,
+                           effect=lambda a, b: a.get("scene") != b.get("scene") or None),
+                    Option("press_space", "Press Space to start / advance this screen",
+                           lambda g, o: self.tap(g, "SpaceBar"), max_seconds=4,
+                           effect=lambda a, b: a.get("scene") != b.get("scene") or None),
+                    Option("skip_cutscene", "Press Escape to skip a whole cutscene",
+                           lambda g, o: self.tap(g, "Escape"), max_seconds=4,
+                           effect=lambda a, b: a.get("scene") != b.get("scene") or None)]
+        return [
+            Option("run_safe", "Run right and react to hazards only: jump obstacles and enemies, duck high shots, "
+                   "RENDER (J) blockers that can be rendered; skip pickups that need a jump",
+                   lambda g, o: self.runner(g, collect=False), max_seconds=8,
+                   effect=lambda a, b: self._progress(a, b)),
+            Option("run_and_collect", "Run right reacting to hazards AND jump to grab spec cards, badges and "
+                   "pickups floating ahead (needed for the stage objective)",
+                   lambda g, o: self.runner(g, collect=True), max_seconds=8,
+                   effect=lambda a, b: self._progress(a, b)),
+            Option("hold_and_render", "Stop running and RENDER (J) at the enemy or blocker ahead, jumping or "
+                   "ducking its attacks, until it is cleared",
+                   lambda g, o: self.runner(g, collect=False, duel=True), max_seconds=6,
+                   effect=lambda a, b: self._progress(a, b)),
+        ]
+
+    def _drive_prog(self, a, b):
+        ca, cb = a.get("_city") or {}, b.get("_city") or {}
+        if not cb:
+            return None
+        return (cb.get("progress") or 0) > (ca.get("progress") or 0) + 5 or b.get("_status") == "won"
+
+    def _progress(self, a, b):
+        sa, sb = a.get("_st") or {}, b.get("_st") or {}
+        if not sb:
+            return None
+        if (sb.get("stageIndex") or 0) > (sa.get("stageIndex") or 0):
+            return True
+        return (sb.get("stageDistance") or 0) > (sa.get("stageDistance") or 0) + 10 or \
+            sb.get("objectiveProgress") != sa.get("objectiveProgress") or \
+            (sb.get("boss") or {}).get("hp") != (sa.get("boss") or {}).get("hp")
+
+    def results(self, game, obs):
+        for _ in range(3):
+            yield from self.tap(game, "Enter", 0.4)
+        yield from wait(game, 2.5)
+        yield from self.tap(game, "SpaceBar", 2.0)
+        return Result(True, "results done")
+
+    def tap(self, game, key, after=1.2):
+        game.hold(key)
+        yield
+        yield
+        game.release(key)
+        yield
+        yield from wait(game, after)
+        return Result(True, "pressed " + key)
+
+    # ---------------- the city drive ----------------
+    def driver(self, game, cap=38, seconds=4.0):
+        held = set()
+        t_end = game.t + seconds
+        stuck_since = None
+
+        def setkeys(want):
+            for k in list(held):
+                if k not in want:
+                    game.release(k); held.discard(k)
+            for k in want:
+                if k not in held:
+                    game.hold(k); held.add(k)
+        try:
+            while game.t < t_end:
+                r = game.batch([lambda: game.get("sim", "state.city"), lambda: game.get("sim", "state.status"),
+                                lambda: game.get("sim", "state.cars")])
+                c, status, cars = _ok(r[0]) or {}, _ok(r[1]), _ok(r[2]) or []
+                if status != "playing" or not c:
+                    break
+                if c.get("rerouteUntil"):
+                    setkeys(set()); yield; continue
+                x, z, h, v, s = c["x"], c["z"], c["heading"], c.get("velocity", 0), c.get("progress", 0)
+                gate_ok = c.get("checkpoint", 0) >= 4
+                # lateral offset: pick a lane clear of roadworks and traffic ahead
+                p = sample(s)
+                half = p["w"] / 2
+                cands = [0, -2.5, 2.5, -4.5, 4.5]
+                lim = half - 2.2
+
+                def conflict(off):
+                    pen = abs(off) * 0.05
+                    if abs(off) > lim:
+                        return 99
+                    for os_, oo in OBSTACLES:
+                        d = os_ - s
+                        if -8 < d < 60 and abs(oo - off) < 3.2:
+                            pen += 20
+                    for car in cars:
+                        rd = car.get("routeDistance", -999)
+                        d = rd - s
+                        if -10 < d < 45:
+                            cp = sample(rd)
+                            lat = (car.get("offset") or 0) * cp["w"] / 2
+                            lat2 = (car.get("laneTo") or car.get("offset") or 0) * cp["w"] / 2 if car.get("laneIntent") else lat
+                            if min(abs(lat - off), abs(lat2 - off)) < 3.4:
+                                pen += 10 * (1 - max(0, d) / 45) + 2
+                    return pen
+                if s > ROUTE_LEN - 70:
+                    off = 6.0
+                elif any(t[0] - 30 < s < t[1] + 10 for t in TURNS):
+                    off = 0.0
+                else:
+                    off = min(cands, key=conflict)
+                # aim point (pure pursuit)
+                look = max(9.0, abs(v) * 0.7)
+                if s > ROUTE_LEN - 40:
+                    tx, tz = DEST
+                else:
+                    tx, tz = point_at(s + look, off)
+                want_h = math.atan2(tx - x, -(tz - z))
+                err = wrap(want_h - h)
+                gain = min(1.45, abs(v) * .12) * (1 - .38 * _clamp((abs(v) - 18) / 20, 0, 1))
+                desired = _clamp(2.5 * err / max(gain, 0.3), -1, 1)
+                st = c.get("steer", 0)
+                keys = set()
+                if desired > st + 0.08 or desired > 0.6:
+                    keys.add("D")
+                elif desired < st - 0.08 or desired < -0.6:
+                    keys.add("A")
+                # speed target
+                vt = cap
+                for (a, b_, sp) in TURNS:
+                    if s < b_:
+                        sp = sp * 0.8
+                        d = max(0, a - 35 - s)
+                        vt = min(vt, math.sqrt(sp ** 2 + 2 * 10 * d))
+                        if a - 35 <= s:
+                            vt = min(vt, sp)
+                dd = math.hypot(DEST[0] - x, DEST[1] - z)
+                if gate_ok or s > ROUTE_LEN - 200:
+                    vt = min(vt, math.sqrt(2 * 7 * max(0, dd - 2)))
+                if abs(err) > 0.6:
+                    vt = min(vt, 9)
+                # traffic straight ahead in our lateral slot
+                for car in cars:
+                    rd = car.get("routeDistance", -999)
+                    d = rd - s
+                    if 0 < d < 35:
+                        cp = sample(rd)
+                        lat = (car.get("offset") or 0) * cp["w"] / 2
+                        if abs(lat - off) < 2.6:
+                            vt = min(vt, max(5.0, d - 8))
+                at_venue = abs(x - DEST[0]) < 8 and abs(z - DEST[1]) < 1.8 and gate_ok
+                if at_venue:
+                    vt = 0
+                if v < vt - 0.5:
+                    keys.add("W")
+                elif v > vt + 1.5 or (vt == 0 and v > 0.05):
+                    keys.add("S")
+                # stuck against something (no turning at 0 speed): reverse out, then R if that fails
+                if "W" in keys and abs(v) < 0.6:
+                    stuck_since = stuck_since or game.t
+                    if game.t - stuck_since > 1.2:
+                        self.reverses = getattr(self, "reverses", 0) + 1
+                        if self.reverses % 3 == 0:
+                            setkeys(set()); yield
+                            game.hold("R"); yield; yield; game.release("R")
+                            self.drive_log.append({"t": round(game.t, 1), "reset_at": int(s)})
+                        else:
+                            setkeys(set()); yield; yield
+                            rev = {"S", "A" if err > 0 else "D"}
+                            setkeys(rev)
+                            t1 = game.t + 1.3
+                            while game.t < t1:
+                                yield
+                            setkeys(set()); yield
+                            self.drive_log.append({"t": round(game.t, 1), "reversed_at": int(s)})
+                        stuck_since = None
+                        continue
+                else:
+                    stuck_since = None
+                setkeys(keys)
+                yield
+        finally:
+            for k in list(held):
+                game.release(k)
+        return Result(True, "drove")
+
+    # ---------------- the side-scroller ----------------
+    def runner(self, game, collect, duel=False, seconds=None):
+        held = set()
+        t_end = game.t + (seconds or (5.0 if duel else 6.0))
+
+        def setkeys(want):
+            for k in list(held):
+                if k not in want:
+                    game.release(k)
+                    held.discard(k)
+            for k in want:
+                if k not in held:
+                    game.hold(k)
+                    held.add(k)
+        jump_pressed = fire_pressed = e_pressed = False
+        try:
+            while game.t < t_end:
+                st = _ok(game.batch([lambda: game.get("sim", "state")])[0])
+                if not st or st.get("status") != "playing" or "player" not in st:
+                    break
+                p = st["player"]
+                front = p["x"] + p["width"]
+                want = {"Right"}
+                jump = fire = crouch = ult = False
+                boss = st.get("boss") or {}
+                if boss.get("active"):
+                    want = set()
+                    if p["x"] > 190:
+                        want.add("Left")
+                    elif p.get("facing", 1) < 0:
+                        want.add("Right")
+                    if boss.get("phase") == "locked" and p.get("facing", 1) > 0:
+                        fire = True
+                    if boss.get("phase") == "ambiguous":
+                        collect = True
+                proj = [o for o in st.get("enemyProjectiles") or [] if o.get("x", 0) + o.get("width", 0) >= p["x"]]
+                proj.sort(key=lambda o: o["x"])
+                if proj and proj[0]["x"] - front < 170:
+                    k = proj[0].get("kind")
+                    if k == "high":
+                        crouch = True
+                    elif k == "render":
+                        fire = True
+                    elif proj[0]["x"] - front < 75:
+                        jump = True
+
+                def nearest(items):
+                    xs = [o for o in items or [] if not o.get("dying") and o["x"] + o.get("width", 0) >= p["x"]]
+                    return min(xs, key=lambda o: o["x"]) if xs else None
+                en = nearest(st.get("enemies"))
+                ob = nearest(st.get("obstacles"))
+                if not boss.get("active"):
+                    gap = en["x"] - front if en else 1e9
+                    if en and en.get("type") == "golem":
+                        if gap < 300 and (st.get("hairCharge") or 0) >= 5:
+                            ult = True
+                        elif -20 < gap < 100:
+                            jump = True
+                    elif en and en.get("punchable") and gap < 570:
+                        if (gap < 300 or duel) and p.get("onGround"):
+                            want.discard("Right")
+                        if p.get("facing", 1) > 0 and p.get("onGround") and (en.get("type") != "gatekeeper" or en.get("exposed")):
+                            fire = True
+                    elif en and -20 < gap < 100:
+                        jump = True
+                    if ob:
+                        dd = ob["x"] - front
+                        t = ob.get("type")
+                        punchable = t not in ("scope", "gate", "rate") and (t != "flaky" or ob.get("state") == "vulnerable")
+                        solid = (not st.get("hasApprovedBadge")) if t == "gate" else (
+                            ob.get("state") == "locked" if t == "flaky" else (ob.get("state") != "open" if t == "rate" else True))
+                        if punchable and t != "stale":
+                            if dd < 450 and p.get("onGround"):
+                                fire = True
+                            if dd < 140 and p.get("onGround"):
+                                want.discard("Right")
+                        elif t == "gate":
+                            if not st.get("hasApprovedBadge") and dd < 35:
+                                want.discard("Right")
+                        elif t in ("rate", "flaky"):
+                            if dd < 45 and solid:
+                                want.discard("Right")
+                        elif -20 < dd < 85:
+                            jump = True
+                    if duel and (en or ob) and p.get("facing", 1) > 0:
+                        fire = True
+                    if duel:
+                        want.discard("Right")
+                        if not en and not (ob and ob["x"] - front < 500):
+                            break
+                if collect and p.get("onGround"):
+                    items = (st.get("approvedBadges") or []) + (st.get("collectibles") or []) + \
+                        (st.get("powerUps") or []) + (st.get("treats") or [])
+                    it = nearest(items)
+                    if it and it["y"] + it.get("height", 0) < p["y"]:
+                        g = it["x"] - front
+                        if -25 < g < max(40, (st.get("speed") or 5) * 12):
+                            jump = True
+                if crouch:
+                    want.add("Down")
+                setkeys(want)
+                if jump and p.get("onGround") and not jump_pressed:
+                    game.hold("SpaceBar"); jump_pressed = True
+                elif jump_pressed:
+                    game.release("SpaceBar"); jump_pressed = False
+                if fire and not fire_pressed:
+                    game.hold("J"); fire_pressed = True
+                elif fire_pressed:
+                    game.release("J"); fire_pressed = False
+                if ult and not e_pressed:
+                    game.hold("E"); e_pressed = True
+                elif e_pressed:
+                    game.release("E"); e_pressed = False
+                yield
+        finally:
+            for k in list(held) + ["SpaceBar", "J", "E"]:
+                try:
+                    game.release(k)
+                except Exception:
+                    pass
+        return Result(True, "ran")
+
+    def idle(self, game, obs):
+        """While no option runs (Jev slow / timed out), keep going with the default stance."""
+        if obs.get("_race") and obs.get("_status") == "playing":
+            yield from self.driver(game, cap=32, seconds=0.7)
+        elif obs.get("_st") and (obs["_st"].get("status") == "playing"):
+            yield from self.runner(game, collect=True, seconds=0.7)
+        else:
+            yield
+
+    def facts(self, obs):
+        f = {k: v for k, v in obs.items() if not k.startswith("_")}
+        if self.hits:
+            f["last_hit"] = self.hits[-1]
+        return f
+
+    def status(self, obs):
+        ev = {"hits": self.hits, "scenes": self.scene_log[-20:], "drive_resets": self.drive_log,
+              "furthest_stage": STAGE_NAMES[min(self.max_stage, 5)]}
+        scenes = obs.get("_scenes", [])
+        if "credits" in scenes:
+            return Status("done", "reached the credits", ev)
+        st = obs.get("_st")
+        if st:
+            ev.update({"stage": obs.get("stage"), "objective": obs.get("objective"), "lives": obs.get("lives")})
+        if obs.get("_race"):
+            ev.update({"drive": {k: obs.get(k) for k in ("route_progress_m", "route_gates", "time_left_s", "lives")}})
+        if st or obs.get("_race"):
+            self.played = True
+        if "gameover" in scenes and getattr(self, "played", False):
+            return Status("failed" if self.max_stage < 5 else "done", "game over / results screen", ev)
+        if st and st.get("status") == "lost":
+            return Status("failed", "run lost (lives gone)", ev)
+        return Status("running", "", ev)
