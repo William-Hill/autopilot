@@ -145,9 +145,35 @@ The `anthropic` provider (`AnthropicDecider`):
 - Both use `requests`, which Autopilot already depends on. The PR adds no package.
 - Both give probabilities from the model, as Jev does.
 
-## 4. What is not verified
+## 4. Live check (2026-11-07)
 
-- No provider other than Jev has made a live call. The tests use stand-in API objects.
-- The exact answer shapes of Workers AI (the envelope) and of `/v1/decisions` (score `probabilities`) come from
-  documentation excerpts, not from live responses.
-- `tools/decision_smoke.py` runs the live check for each provider when the keys are in `autopilot.env`.
+We ran `tools/decision_smoke.py` (5 calls each, one Choice of 3 options and one Noul) and `cli.classify` (4
+prompts each) from a Mac, with the user's own keys. No call went through Aura.
+
+| Provider | Model | Smoke latency, median / max | Input tokens per call | Pick (probability) | `hurt` (health 30) | `classify`, 4 prompts |
+|---|---|---|---|---|---|---|
+| `jev` | `jev-1.13.0` | 0.39 s / 0.82 s | 510 | retreat (0.64–0.69) | 0.76–0.78 | 4 of 4 correct, 1.3 s |
+| `anthropic` | `claude-haiku-5-5` | 1.19 s / 2.23 s | 788 (+49 output) | retreat 3 times, run_to_door 2 times (0.45–0.50) | 0.10–0.15 | 4 of 4 correct, 5.8 s |
+| `clef` | `clef` | 0.25 s / 1.58 s | 331 | attack (0.50) | 0.93 | 4 of 4 correct, 9.8 s |
+| `openai` | `gpt-6-luna` | 0.24 s / 1.16 s | 410 | retreat (0.64) | 0.87 | 4 of 4 correct, 2.1 s |
+
+What the live answers confirmed:
+
+- Workers AI wraps the answer: `{"success", "errors", "messages", "result"}`. `result` has Jev's fields
+  (`answers`, `model`, `usage`), and a Score answer has `legend`.
+- In `/v1/decisions`, a score's `probabilities` is a list of `{"value": 0, "label": "0", "probability": ...}`.
+  `usage` has `input_tokens`, `output_tokens` (0), and `total_tokens`.
+- `clef` and `openai` gave the same answer on each of the 5 calls. `jev` changed by a few hundredths.
+
+What the live answers show about quality (one situation only, so not a benchmark):
+
+- `anthropic` was the slowest and the least stable. It changed its pick between calls, and it said the player was
+  not hurt (0.10) at health 30, where the other three said 0.76–0.93.
+- `clef` picked `attack`, where `jev` and `openai` picked `retreat`.
+- One situation cannot rank the models. A benchmark on recorded game states is necessary for that.
+
+Not verified:
+
+- No game run with a provider other than Jev. The runtime tests use stand-in APIs.
+- No run through Aura with the `anthropic` provider.
+- The first call of each provider was slower (0.77–2.23 s), probably from connection setup.
