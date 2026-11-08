@@ -41,6 +41,10 @@ passes `allowRemote: true`. The browser's WebSocket cannot send an `Authorizatio
 reads; without `restart`, `session` restart answers 501; without `render`, a canvas made without
 `preserveDrawingBuffer` can read back black.
 
+The bridge also serves 2D games: with `dimension: "2d"`, the scene is the plane z = 0 (x right, y up), and the kit
+frame is the Godot plugin's 2D frame (kit X right, kit Z up, 1 unit = 1 kit unit). `engine` names the engine in hello.
+[`plugin/phaser`](../phaser/README.md) uses this mode to build a scene of this shape from a Phaser game.
+
 ## What it answers
 
 | Op | How |

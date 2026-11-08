@@ -3,6 +3,9 @@
 // tests (bridge.test.mjs) and the Python tests (tests/test_threejs.py, through `node fake_game.mjs <url>`) drive it.
 // No three, no browser.
 
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
 import { createBridge } from "../autopilot-bridge.js";
 
 function translation(x, y, z) {
@@ -113,7 +116,8 @@ export function makeFakeGame({ url, WebSocket } = {}) {
 
 // `node fake_game.mjs ws://127.0.0.1:<port>/v1/bridge`: connect to that agent service and run frames in real time
 // until it closes the connection.
-if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split("/").pop()) && process.argv[2]) {
+// (as a real path's file URL: on Windows argv[1] has backslashes, which a "/" split leaves whole)
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href && process.argv[2]) {
   const game = makeFakeGame({ url: process.argv[2], WebSocket: globalThis.WebSocket });
   game.bridge.connect();
   const timer = setInterval(() => {

@@ -12,6 +12,9 @@
 // The module imports nothing (not even three): the math it needs is here, on the plain arrays Three.js keeps
 // (matrixWorld.elements, geometry.boundingBox). A Node test drives it with plain objects (plugin/threejs/test/).
 //
+// The bridge also has a 2D mode (`dimension: "2d"`, makeFrame2D): plugin/phaser builds a scene of the same shape from
+// a Phaser game and gives its own engine name.
+//
 // Licensed under the Apache License 2.0, as the rest of Autopilot.
 
 export const PROTOCOL = 1;
@@ -32,6 +35,7 @@ export function makeFrame(metres = 1) {
   const r2 = (x) => (Number.isFinite(x) ? Math.round(x * 100) / 100 + 0 : x); // (+ 0: never -0)
   return {
     scale: s,
+    dimension: "3d",
     kit: (v) => ({ X: r2(-v[2] * s), Y: r2(v[0] * s), Z: r2(v[1] * s) }),
     kitDir: (v) => ({ X: r2(-v[2]), Y: r2(v[0]), Z: r2(v[1]) }),
     kitExtent: (half) => ({ X: r2(Math.abs(half[2]) * s), Y: r2(Math.abs(half[0]) * s), Z: r2(Math.abs(half[1]) * s) }),
@@ -40,6 +44,31 @@ export function makeFrame(metres = 1) {
     // Kit yaw of a native direction: degrees about Z from +X toward +Y; pitch: up positive.
     yawOf: (d) => r2((Math.atan2(d[0], -d[2]) * 180) / Math.PI),
     pitchOf: (d) => r2((Math.atan2(d[1], Math.hypot(d[0], d[2])) * 180) / Math.PI),
+    r2,
+  };
+}
+
+// A 2D game (the bridge's `dimension: "2d"`), as the Godot plugin's 2D. The scene is the plane z = 0: x right, y up (a
+// game whose y points down gives -y), z toward the viewer, in the game's own unit (`kitPerUnit` kit units per unit, 1
+// by default: 1 pixel = 1 kit unit). Kit (X, Y, Z) = k * (x, z, y): kit X is screen right, kit Z is screen up, and kit
+// Y is 0 on the plane. A rotation in the plane is a kit pitch (counterclockwise is up); a direction to the left has
+// yaw 180, every other direction yaw 0.
+export function makeFrame2D(kitPerUnit = 1) {
+  const s = Number(kitPerUnit) > 0 ? Number(kitPerUnit) : 1;
+  const r2 = (x) => (Number.isFinite(x) ? Math.round(x * 100) / 100 + 0 : x); // (+ 0: never -0)
+  const deg = (r) => (r * 180) / Math.PI;
+  return {
+    scale: s,
+    dimension: "2d",
+    kit: (v) => ({ X: r2(v[0] * s), Y: r2(v[2] * s), Z: r2(v[1] * s) }),
+    kitDir: (v) => ({ X: r2(v[0]), Y: r2(v[2]), Z: r2(v[1]) }),
+    kitExtent: (half) => ({ X: r2(Math.abs(half[0]) * s), Y: r2(Math.abs(half[2]) * s), Z: r2(Math.abs(half[1]) * s) }),
+    fromKit: (d) => [Number(d?.X ?? 0) / s, Number(d?.Z ?? 0) / s, Number(d?.Y ?? 0) / s],
+    fromKitDir: (d) => [Number(d?.X ?? 0), Number(d?.Z ?? 0), Number(d?.Y ?? 0)],
+    yawOf: (d) => (d[0] < -1e-9 ? 180 : 0),
+    pitchOf: (d) => (Math.abs(d[0]) < 1e-9 && Math.abs(d[1]) < 1e-9 ? 0 : r2(deg(Math.atan2(d[1], Math.abs(d[0]))))),
+    // An object's rotation from its world matrix: the angle of its x axis in the plane
+    rotationOf: (m) => ({ Pitch: r2(deg(Math.atan2(m[1], m[0]))), Yaw: 0, Roll: 0 }),
     r2,
   };
 }
@@ -77,6 +106,7 @@ export function worldForward(o) {
 // Kit rotation {Pitch, Yaw, Roll} of an object: yaw and pitch of its -z axis, roll from its x axis' height.
 function kitRotation(frame, o) {
   const m = worldMatrix(o);
+  if (frame.rotationOf) return frame.rotationOf(m);
   const f = worldForward(o);
   const right = [m[0], m[1], m[2]];
   const rn = Math.hypot(right[0], right[1], right[2]) || 1;
@@ -185,9 +215,28 @@ export function keySpec(name) {
 export function unrealName(code) {
   const k = /^Key([A-Z])$/.exec(code);
   if (k) return k[1];
-  for (const [name, c] of Object.entries(NAMED_CODES)) if (c === code && !name.startsWith("Right") && !name.startsWith("NumPad")) return name;
+  // (RightShift, RightControl... are not the arrow key Right)
+  for (const [name, c] of Object.entries(NAMED_CODES)) if (c === code && (name === "Right" || !name.startsWith("Right")) && !name.startsWith("NumPad")) return name;
   if (code === "ShiftRight") return "RightShift";
   return code;
+}
+
+// The legacy keyCode of a code (KeyboardEvent.keyCode, which engines such as Phaser still read), or 0.
+const KEY_CODES = {
+  Space: 32, Enter: 13, Escape: 27, Tab: 9, Backspace: 8, ShiftLeft: 16, ShiftRight: 16, ControlLeft: 17,
+  ControlRight: 17, AltLeft: 18, AltRight: 18, MetaLeft: 91, MetaRight: 93, ArrowLeft: 37, ArrowUp: 38,
+  ArrowRight: 39, ArrowDown: 40, Delete: 46, Insert: 45, Home: 36, End: 35, PageUp: 33, PageDown: 34, CapsLock: 20,
+  Pause: 19, Semicolon: 186, Equal: 187, Comma: 188, Minus: 189, Period: 190, Slash: 191, Backquote: 192,
+  BracketLeft: 219, Backslash: 220, BracketRight: 221, Quote: 222,
+};
+export function legacyKeyCode(code) {
+  const k = /^Key([A-Z])$/.exec(code);
+  if (k) return k[1].charCodeAt(0);
+  const d = /^(Digit|Numpad)(\d)$/.exec(code);
+  if (d) return (d[1] === "Digit" ? 48 : 96) + Number(d[2]);
+  const f = /^F(\d{1,2})$/.exec(code);
+  if (f) return 111 + Number(f[1]);
+  return KEY_CODES[code] ?? 0;
 }
 
 // The `key` text a KeyboardEvent carries for a code.
@@ -280,6 +329,15 @@ export class OpError extends Error {
 //   (window);
 //   project: the game's name (hello's `project`); projectDir: the project folder on this machine, when the game knows it;
 //   metres: metres per scene unit (1);
+//   dimension: "3d" (the default) or "2d": a 2D game's scene is the plane z = 0, x right and y up (makeFrame2D); then
+//   kitPerUnit: kit units per scene unit (1: 1 pixel = 1 kit unit, as the Godot plugin's 2D);
+//   engine, engineVersion: what hello and context say (default "threejs" and three's revision): a helper for another
+//   engine (plugin/phaser) builds a scene of this shape and gives its own name;
+//   moveKeys: {up, down, left, right}, the keys `move` holds without a move hook (W, S, A, D; in 3D up is forward);
+//   thingDepth: how deep under the scene its things are (2: the scene's direct children);
+//   pictureCanvas: the canvas frames and stills read (the canvas by default), e.g. a copy the game keeps of each frame;
+//   nodeOf(value) -> scene object | null: the scene object a game value stands for, so `rc` answers its path. A scene
+//   object may carry `rcTarget`: the game's own object that `rc` reads and calls in its place;
 //   hooks: what Three.js has no standard for (all optional except player):
 //     player() -> {object?: Object3D, path?: string, position: [x,y,z], velocity?: [x,y,z], forward?: [x,y,z],
 //                  onGround?: bool, halfHeight?: number (scene units)} | null: the player now;
@@ -303,7 +361,10 @@ export function connectBridge(options = {}) {
 
 export function createBridge(options = {}) {
   const hooks = options.hooks ?? {};
-  const frame = makeFrame(options.metres ?? 1);
+  const frame = options.dimension === "2d" ? makeFrame2D(options.kitPerUnit ?? 1) : makeFrame(options.metres ?? 1);
+  const { dimension } = frame;
+  const engine = String(options.engine ?? "threejs");
+  const moveKeys = { up: "W", down: "S", left: "A", right: "D", ...(options.moveKeys ?? {}) };
   const g = options.global ?? globalThis;
   const doc = options.document ?? g.document;
   const keyTarget = options.keyTarget ?? g;
@@ -318,6 +379,11 @@ export function createBridge(options = {}) {
   const scene = () => (typeof options.scene === "function" ? options.scene() : options.scene);
   const camera = () => (typeof options.camera === "function" ? options.camera() : options.camera);
   const canvas = () => (typeof options.canvas === "function" ? options.canvas() : options.canvas);
+  const pictureCanvas = () => {
+    const p = typeof options.pictureCanvas === "function" ? options.pictureCanvas() : options.pictureCanvas;
+    return p ?? canvas();
+  };
+  const thingDepth = Number(options.thingDepth ?? 2);
 
   let ws = null;
   let state = "idle";
@@ -348,8 +414,8 @@ export function createBridge(options = {}) {
       type: "hello",
       protocol: PROTOCOL,
       plugin_version: VERSION,
-      engine: "threejs",
-      engine_version: String(options.threeRevision ?? g.__THREE__ ?? ""),
+      engine,
+      engine_version: String(options.engineVersion ?? options.threeRevision ?? g.__THREE__ ?? ""),
       project: options.project ?? (doc?.title || "web game"),
       host: "game",
       features: ["timed_hold", "levels", "pointer", "media"],
@@ -564,8 +630,8 @@ export function createBridge(options = {}) {
     const cam = camera();
     return {
       world: scenePath(), scene: scenePath(), character: p ? p.path : "", controller: "", input_subsystem: "",
-      camera_manager: cam ? pathOf(cam) : "", camera: cam ? pathOf(cam) : "", dimension: "3d",
-      game_name: options.project ?? (doc?.title || ""), host: "game", engine: "threejs",
+      camera_manager: cam ? pathOf(cam) : "", camera: cam ? pathOf(cam) : "", dimension,
+      game_name: options.project ?? (doc?.title || ""), host: "game", engine,
       session_running: Boolean(scene()), paused: Boolean(hooks.paused?.()), game_time: t(),
       project_dir: options.projectDir ?? "", controls: controls(), input: inputCaps(), net: { mode: "standalone" },
       page: g.location ? String(g.location.href) : "",
@@ -682,7 +748,7 @@ export function createBridge(options = {}) {
     // The scene's things, as Unreal's actors: the scene's direct children and what the game marks as one
     // (userData.thing, or a class of its own: userData.class or the classOf hook's)
     const depth = path.split("/").length - 1;
-    return depth === 2 || o.userData?.thing === true || o.userData?.class !== undefined || Boolean(hooks.classOf?.(o));
+    return depth === thingDepth || o.userData?.thing === true || o.userData?.class !== undefined || Boolean(hooks.classOf?.(o));
   }
 
   function find(args) {
@@ -765,7 +831,7 @@ export function createBridge(options = {}) {
     const hh = Number(p.halfHeight ?? 0);
     const center = [p.position[0], p.position[1] + hh, p.position[2]];
     const fwd = cam ? worldForward(cam) : p.forward ?? [0, 0, -1];
-    const eye = cam ? worldPosition(cam) : center;
+    const eye = cam ? eyeOf(cam) : center;
     return {
       path: p.path, at: frame.kit(center), feet: frame.kit(p.position), eye: frame.kit(eye),
       yaw: frame.yawOf(fwd), pitch: frame.pitchOf(fwd), velocity: frame.kit(p.velocity ?? [0, 0, 0]),
@@ -797,7 +863,7 @@ export function createBridge(options = {}) {
     const only = Array.isArray(args.only) ? new Set(args.only.map(String)) : null;
     const maxCount = Number(args.max_count ?? 40);
     const p = playerNow();
-    const eye = worldPosition(cam);
+    const eye = eyeOf(cam);
     const items = [];
     walk((path, o) => {
       if (o === s) return true;
@@ -811,7 +877,8 @@ export function createBridge(options = {}) {
       if (!box) return true;
       const center = box[0].map((v, i) => (v + box[1][i]) / 2);
       const half = box[0].map((v, i) => (box[1][i] - v) / 2);
-      if (!only && Math.max(half[0], half[2]) * frame.scale * 2 > Number(args.floor_size ?? 4000) && half[1] * frame.scale < 50) return true;
+      const wide = dimension === "2d" ? half[0] : Math.max(half[0], half[2]);
+      if (!only && wide * frame.scale * 2 > Number(args.floor_size ?? 4000) && half[1] * frame.scale < 50) return true;
       const sp = project(cam, center);
       const corners = [];
       for (const x of [box[0][0], box[1][0]]) for (const y of [box[0][1], box[1][1]]) for (const z of [box[0][2], box[1][2]]) corners.push(project(cam, [x, y, z]));
@@ -837,15 +904,25 @@ export function createBridge(options = {}) {
     const vfov = Number(cam.fov ?? 60);
     const aspect = Number(cam.aspect ?? 1);
     const hfov = (2 * Math.atan(Math.tan((vfov * Math.PI) / 360) * aspect) * 180) / Math.PI;
+    // (2D: the camera's view is a rectangle, its width and height in kit units, not a field of view)
+    const camOut = dimension === "2d"
+      ? { location: frame.kit(eye), yaw: 0, pitch: 0, width: frame.r2(Number(cam.viewWidth ?? 0) * frame.scale), height: frame.r2(Number(cam.viewHeight ?? 0) * frame.scale) }
+      : { location: frame.kit(eye), yaw: frame.yawOf(fwd), pitch: frame.pitchOf(fwd), fov: frame.r2(hfov), vfov: frame.r2(vfov) };
     const out = {
       visible: items.slice(0, maxCount),
-      camera: { location: frame.kit(eye), yaw: frame.yawOf(fwd), pitch: frame.pitchOf(fwd), fov: frame.r2(hfov), vfov: frame.r2(vfov) },
+      camera: camOut,
       crosshair_tested: false, oriented: false, effects_play: true,
       body: p ? { on_ground: p.onGround ?? null, falling: p.onGround === false && (p.velocity?.[1] ?? 0) < 0, ...(p.state !== undefined ? { state: p.state } : {}) } : null,
       omitted: OMITTED,
     };
     if (only) out.only = [...only];
     return out;
+  }
+
+  // Where the camera sees from: its position; in 2D its middle on the plane (z = 0), so distances are in the plane.
+  function eyeOf(cam) {
+    const e = worldPosition(cam);
+    return dimension === "2d" ? [e[0], e[1], 0] : e;
   }
 
   function isAncestor(a, o) {
@@ -901,8 +978,15 @@ export function createBridge(options = {}) {
 
   function dispatchKey(code, down) {
     const Ev = g.KeyboardEvent;
-    const init = { code, key: keyText(code), bubbles: true, cancelable: true };
+    const keyCode = legacyKeyCode(code);
+    const init = { code, key: keyText(code), keyCode, which: keyCode, bubbles: true, cancelable: true };
     const ev = Ev ? new Ev(down ? "keydown" : "keyup", init) : { type: down ? "keydown" : "keyup", ...init, preventDefault() {} };
+    // A KeyboardEvent made by a script has keyCode 0 whatever its init says, and some engines (Phaser) read only
+    // keyCode: set it on the event itself
+    if (Ev && ev.keyCode !== keyCode) {
+      Object.defineProperty(ev, "keyCode", { value: keyCode });
+      Object.defineProperty(ev, "which", { value: keyCode });
+    }
     keyTarget.dispatchEvent?.(ev);
   }
 
@@ -1084,8 +1168,9 @@ export function createBridge(options = {}) {
     frame: () => new Promise((r) => deferred.push(() => (r(), true))),
   };
 
-  // `move`: walk the player in a kit direction for `seconds`. The game's move hook when it has one; else W/A/S/D held
-  // camera-relative (8 directions), as the Godot plugin's "keys".
+  // `move`: walk the player in a kit direction for `seconds`. The game's move hook when it has one; else W/A/S/D
+  // (moveKeys) held camera-relative (8 directions), as the Godot plugin's "keys". In 2D the keys are screen-relative:
+  // kit X is right, kit Z is up.
   async function moveOp(args) {
     const p0 = playerNow();
     if (!p0) throw new OpError("No player", 404);
@@ -1098,23 +1183,32 @@ export function createBridge(options = {}) {
       via = "game";
       await hooks.move({ direction: dir.map((v) => v * scale), seconds, scale, keys: keysForHooks });
     } else {
-      const cam = camera();
-      const f = cam ? worldForward(cam) : [0, 0, -1];
-      const fl = Math.hypot(f[0], f[2]) || 1;
-      const fwd = [f[0] / fl, 0, f[2] / fl];
-      const right = [-fwd[2], 0, fwd[0]];
-      const dl = Math.hypot(dir[0], dir[2]) || 1;
-      const want = [(dir[0] / dl) * scale, 0, (dir[2] / dl) * scale];
-      const fv = want[0] * fwd[0] + want[2] * fwd[2];
-      const rv = want[0] * right[0] + want[2] * right[2];
-      const keys = [[fv > 0.38, "W"], [fv < -0.38, "S"], [rv < -0.38, "A"], [rv > 0.38, "D"]].filter(([on]) => on).map(([, k]) => k);
+      let fv;
+      let rv;
+      if (dimension === "2d") {
+        const dl = Math.hypot(dir[0], dir[1]) || 1;
+        rv = (dir[0] / dl) * scale;
+        fv = (dir[1] / dl) * scale;
+      } else {
+        const cam = camera();
+        const f = cam ? worldForward(cam) : [0, 0, -1];
+        const fl = Math.hypot(f[0], f[2]) || 1;
+        const fwd = [f[0] / fl, 0, f[2] / fl];
+        const right = [-fwd[2], 0, fwd[0]];
+        const dl = Math.hypot(dir[0], dir[2]) || 1;
+        const want = [(dir[0] / dl) * scale, 0, (dir[2] / dl) * scale];
+        fv = want[0] * fwd[0] + want[2] * fwd[2];
+        rv = want[0] * right[0] + want[2] * right[2];
+      }
+      const keys = [[fv > 0.38, moveKeys.up], [fv < -0.38, moveKeys.down], [rv < -0.38, moveKeys.left], [rv > 0.38, moveKeys.right]].filter(([on]) => on).map(([, k]) => k);
       for (const k of keys) keysForHooks.hold(k);
       await new Promise((r) => setTimeout(r, seconds * 1000));
       for (const k of keys) keysForHooks.release(k);
     }
     const p1 = playerNow();
     const end = p1 ? p1.position : start;
-    return { moved: frame.r2(Math.hypot(end[0] - start[0], end[2] - start[2]) * frame.scale), via };
+    const dy = dimension === "2d" ? end[1] - start[1] : end[2] - start[2];
+    return { moved: frame.r2(Math.hypot(end[0] - start[0], dy) * frame.scale), via };
   }
 
   function pointerOp(args) {
@@ -1258,7 +1352,7 @@ export function createBridge(options = {}) {
   function rcResolve(path) {
     const s = String(path ?? "");
     const o = resolve(s);
-    if (o) return o;
+    if (o) return o.rcTarget ?? o;
     const [head, ...rest] = s.split(".");
     let cur = hooks.objects?.[head];
     if (cur === undefined) return undefined;
@@ -1269,13 +1363,16 @@ export function createBridge(options = {}) {
     return cur;
   }
 
-  function plain(v, depth = 0) {
+  function plain(v, depth = 0, root = false) {
     if (v === null || v === undefined || typeof v === "number" || typeof v === "string" || typeof v === "boolean") return v ?? null;
     if (typeof v === "function") return "<function>";
     if (depth > 4) return "<...>";
     if (Array.isArray(v) || ArrayBuffer.isView(v)) return Array.from(v).slice(0, 200).map((x) => plain(x, depth + 1));
     if (v.isVector3) return { x: v.x, y: v.y, z: v.z };
-    if (v.isObject3D) return pathOf(v) || `<${v.type}>`;
+    // A scene object in a value reads as its path; the object a read asks for (root) gives its properties
+    if (!root && v.isObject3D) return pathOf(v) || `<${v.type}>`;
+    const node = root ? null : options.nodeOf?.(v);
+    if (node) return pathOf(node) || `<${node.type}>`;
     if (v instanceof Map) return Object.fromEntries([...v].slice(0, 200).map(([k, x]) => [String(k), plain(x, depth + 1)]));
     if (v instanceof Set) return [...v].slice(0, 200).map((x) => plain(x, depth + 1));
     const out = {};
@@ -1303,7 +1400,7 @@ export function createBridge(options = {}) {
         obj[name] = value;
         return {};
       }
-      if (!name) return plain(obj);
+      if (!name) return plain(obj, 0, true);
       let v = obj;
       for (const part of String(name).split(/[.:]/)) {
         if (v === null || v === undefined) break;
@@ -1357,7 +1454,7 @@ export function createBridge(options = {}) {
   // The canvas now, as a JPEG at most maxDim on its longer side: {jpeg: base64, width, height}, or null. The game's
   // render hook draws a frame first, so the WebGL buffer holds a picture to read (without preserveDrawingBuffer).
   function picture(maxDim, quality) {
-    const c = canvas();
+    const c = pictureCanvas();
     if (!c || !doc?.createElement) return null;
     try {
       hooks.render?.();
@@ -1384,7 +1481,7 @@ export function createBridge(options = {}) {
     if (!picture(64, 50)) throw new OpError("no picture: the canvas can't be read", 409);
     const f = Number(args.fps ?? 5);
     recording = { fps: Number.isFinite(f) && f > 0 ? Math.max(0.1, Math.min(60, f)) : 5, maxDim: clampDim(args.max_dim, 960), quality: clampQuality(args.quality, 75), n: 0, sent: 0, next: 0 };
-    const c = canvas();
+    const c = pictureCanvas();
     const k = Math.min(1, recording.maxDim / Math.max(c.width, c.height));
     return { recording: true, width: Math.round(c.width * k), height: Math.round(c.height * k) };
   }
