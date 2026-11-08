@@ -110,7 +110,7 @@ class Sandbox:
                                      bufsize=0)
         self._write({"type": "init", "project": project, "prompt": prompt, "run_id": run_id,
                      "hello": getattr(link, "hello", None) or {}, "loopback": bool(getattr(link, "loopback", False)),
-                     "level": level})
+                     "level": level, "answer_timeout": getattr(client, "answer_timeout", None)})
         self.listener = lambda event: self._write({"type": "event", "event": event})
         if isinstance(getattr(link, "listeners", None), list):
             link.listeners.append(self.listener)
@@ -362,8 +362,10 @@ class ProxyLink:
 class RemoteJev:
     """A Jev client whose questions the parent asks (the child has no key)."""
 
-    def __init__(self, link):
+    def __init__(self, link, answer_timeout=None):
         self.link = link
+        if isinstance(answer_timeout, (int, float)) and answer_timeout > 0:
+            self.answer_timeout = answer_timeout  # (the parent's decision model's: runtime.Runtime.answer_limit)
 
     def system_one(self, state, questions):
         dumps = {k: q.model_dump(mode="json", exclude_none=True) for k, q in questions.items()}
@@ -455,7 +457,8 @@ def child_main():
 
     game = Game(link, codexmod.Codex.for_project(init["project"]))
     game.level = init.get("level")  # (the run's level: restarts start it over)
-    session = Session(game, init["project"], init["prompt"], init["run_id"], say=link.status, client=RemoteJev(link))
+    session = Session(game, init["project"], init["prompt"], init["run_id"], say=link.status,
+                      client=RemoteJev(link, init.get("answer_timeout")))
     session.forward = lambda event: out({"type": "activity", "event": event})  # (the parent's feed has it)
     session.stop = stopped.is_set
     session.budget = 0  # (the run's time is the parent's: it closes play itself, and gives episodes their end)

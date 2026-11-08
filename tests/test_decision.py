@@ -292,3 +292,164 @@ def test_the_http_providers_are_chosen_by_name(monkeypatch, name, cls):
     monkeypatch.setenv(decision.PROVIDER_ENV, name)
     c = decision.client()
     assert type(c).__name__ == cls and c.answer_timeout == decision.HTTP_TIMEOUT
+
+
+# -- coverage per provider: success, a missing key, an API error -----------------------------------------------------
+
+def test_openai_needs_its_key_even_through_aura(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv(decision.PROVIDER_ENV, "openai")
+    monkeypatch.setattr(cli.aura, "enabled", lambda: True)
+    assert "OPENAI_API_KEY" in cli.decision_key_missing()
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    assert cli.decision_key_missing() is None
+
+
+def test_an_openai_http_error_raises_without_the_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-key")
+    s = FakeSession({"error": {"message": "server error", "type": "server_error"}}, status=500)
+    with pytest.raises(RuntimeError) as e:
+        decision.OpenAIDecider(session=s).system_one(state={}, questions=pick({"a": "A"}))
+    assert "openai: HTTP 500" in str(e.value) and "server error" in str(e.value) and "secret-key" not in str(e.value)
+
+
+def test_an_anthropic_api_error_reaches_the_caller():
+    class Down(FakeSDK):
+        def create(self, **req):
+            raise ConnectionError("no network")
+
+    with pytest.raises(ConnectionError):
+        decision.AnthropicDecider(sdk=Down({})).system_one(state={}, questions=pick({"a": "A"}))
+
+
+def test_a_question_with_no_answer_is_an_error():
+    """A 200 answer that leaves out a question (Cloudflare's envelope with no result, an answer missing) raises, so
+    the runtime counts an error instead of a decision with no pick."""
+    for body in ({"success": False, "errors": [{"message": "busy"}], "result": None}, {"answers": {}}):
+        with pytest.raises(RuntimeError, match="no answer to pick"):
+            decision.ClefDecider(session=FakeSession(body)).system_one(state={}, questions=pick({"a": "A"}))
+    with pytest.raises(RuntimeError, match="no answer to hurt"):
+        decision.OpenAIDecider(session=FakeSession({"answers": [OPENAI_ANSWER["answers"][0]]})).system_one(
+            state={}, questions={**pick({"a": "A", "b": "B"}), "hurt": Noul(instructions="Hurt?")})
+
+
+# -- the model setting ------------------------------------------------------------------------------------------------
+
+def test_a_model_of_another_provider_is_an_error(monkeypatch):
+    monkeypatch.setenv(decision.PROVIDER_ENV, "clef")
+    monkeypatch.setenv(decision.MODEL_ENV, "claude-sonnet-5-5")
+    with pytest.raises(decision.ProviderError, match="not a model of clef"):
+        decision.check()
+    with pytest.raises(decision.ProviderError):
+        decision.client()
+    monkeypatch.setattr(cli.aura, "enabled", lambda: False)
+    assert "not a model of clef" in cli.decision_key_missing()
+    monkeypatch.setenv(decision.MODEL_ENV, "clef-flash")
+    assert decision.check() == "clef" and decision.client().model == "clef-flash"
+    monkeypatch.setenv(decision.PROVIDER_ENV, "jev")  # (Jev's model is AUTOPILOT_JEV_MODEL: this one is not read)
+    assert decision.check() == "jev"
+
+
+def test_each_http_thread_keeps_its_own_session():
+    import threading
+
+    d = decision.OpenAIDecider()
+    seen = []
+    t = threading.Thread(target=lambda: seen.append(d.session))
+    t.start()
+    t.join()
+    assert d.session is d.session and seen[0] is not d.session
+
+
+# -- the runtime and the sandbox take every provider -----------------------------------------------------------------
+
+class Picker:
+    """Answers for each provider's API: the option named `likes` when offered, else the first."""
+
+    def __init__(self, likes):
+        self.likes = likes
+
+    def best(self, names):
+        return self.likes if self.likes in names else names[0]
+
+    def clef(self, body):
+        names = list(body["questions"]["pick"]["criteria"])
+        best = self.best(names)
+        probs = {n: (0.9 if n == best else 0.1 / max(1, len(names) - 1)) for n in names}
+        return {"answers": {"pick": {"type": "choice", "choice": best, "confidence": 0.9, "probabilities": probs}}}
+
+    def openai(self, body):
+        names = [c["value"] for c in body["questions"][0]["choices"]]
+        best = self.best(names)
+        return {"answers": [{"type": "choice", "name": "pick", "choice": best, "confidence": 0.9,
+                             "probabilities": [{"value": n, "probability": 0.9 if n == best else 0.1} for n in names]}]}
+
+
+class PickingSession(FakeSession):
+    def __init__(self, answer):
+        super().__init__(None)
+        self.answer = answer
+
+    def post(self, url, headers=None, json=None, timeout=None):
+        self.body = self.answer(json)
+        return super().post(url, headers, json, timeout)
+
+
+class PickingSDK(FakeSDK):
+    def __init__(self, likes):
+        super().__init__({})
+        self.likes = likes
+
+    def create(self, **req):
+        names = list(req["output_config"]["format"]["schema"]["properties"]["pick"]["properties"])
+        self.answer = {"pick": {n: (9 if n == self.likes else 1) for n in names}}
+        return super().create(**req)
+
+
+@pytest.mark.parametrize("name", ["anthropic", "clef", "openai"])
+def test_the_runtime_plays_with_each_provider(name, tmp_path):
+    from test_autopilot import CrateHarness, FakeLink
+
+    from autopilot.kit.game import Game
+
+    game = Game(FakeLink())
+    game.look = {"x": 0.1, "y": 0.1}
+    if name == "anthropic":
+        client = decision.AnthropicDecider(sdk=PickingSDK("open_crate"))
+    else:
+        cls = decision.ClefDecider if name == "clef" else decision.OpenAIDecider
+        client = cls(session=PickingSession(getattr(Picker("open_crate"), name)))
+    rt = runtime.Runtime(game, CrateHarness(), str(tmp_path / "t.jsonl"), client=client, max_seconds=20)
+    assert rt.answer_limit == client.answer_timeout
+    res = rt.run()
+    assert res["status"]["state"] == "done", res
+    assert res["options"]["open_crate"]["started"] >= 1
+
+
+def test_the_runtime_counts_a_providers_errors(tmp_path):
+    from test_autopilot import CrateHarness, FakeLink
+
+    from autopilot.kit.game import Game
+
+    game = Game(FakeLink())
+    game.look = {"x": 0.1, "y": 0.1}
+    client = decision.ClefDecider(session=FakeSession({"errors": ["Authentication error"]}, status=401))
+    rt = runtime.Runtime(game, CrateHarness(), str(tmp_path / "t.jsonl"), client=client, max_seconds=2)
+    rt.run()
+    assert rt.errors["jev: RuntimeError"] >= 1
+
+
+def test_jev_keeps_jevs_answer_limit(tmp_path):
+    from test_autopilot import CrateHarness, FakeJev, FakeLink
+
+    from autopilot.kit.game import Game
+
+    rt = runtime.Runtime(Game(FakeLink()), CrateHarness(), str(tmp_path / "t.jsonl"), client=FakeJev("x"))
+    assert rt.answer_limit == runtime.JEV_TIMEOUT
+
+
+def test_the_sandboxed_runtime_gets_the_providers_answer_limit():
+    """The child plays with RemoteJev: it carries the parent's answer_timeout (sandbox init), else Jev's applies."""
+    assert sandbox.RemoteJev(link=None, answer_timeout=3.0).answer_timeout == 3.0
+    assert not hasattr(sandbox.RemoteJev(link=None), "answer_timeout")
+    assert not hasattr(sandbox.RemoteJev(link=None, answer_timeout=None), "answer_timeout")
