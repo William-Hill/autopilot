@@ -1,7 +1,7 @@
 """Ask the chosen decision model (AUTOPILOT_DECISION_PROVIDER) a few play-like questions and print the answers and
 the latency. It reads the keys from Autopilot/autopilot.env, as a run does, and never prints them.
 
-    AUTOPILOT_DECISION_PROVIDER=anthropic python tools/decision_smoke.py [calls]
+    AUTOPILOT_DECISION_PROVIDER=anthropic|clef|openai python tools/decision_smoke.py [calls]
 """
 
 import statistics

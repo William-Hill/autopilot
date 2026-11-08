@@ -6,6 +6,10 @@ Autopilot uses TypeSafe's Jev as its decision model. Jev plays inside a harness 
 a prompt. This note records how Jev is connected now, which other decision models exist, and the adapter on this
 branch.
 
+Upstream check (2026-11-07): `ramenvr/autopilot` has no code for another decision model on any of its 6 branches
+(`main`, `staging`, and 4 feature branches). No issue and no pull request asks for one. This branch merges with
+`upstream/main` with no conflicts.
+
 Key to the marks: **V** means that we read the fact in a primary source (vendor documentation, blog, or price page).
 **I** means that the fact comes from a secondary source, or that we inferred it.
 
@@ -93,9 +97,16 @@ agent read the other sources on the same day.
 
 `autopilot/decision.py` names the interface that the code already used. It adds one setting:
 
-- `AUTOPILOT_DECISION_PROVIDER` = `jev` (the default) or `anthropic`. Any other value is an error.
-- `AUTOPILOT_DECISION_MODEL` chooses the Claude model. The default is `claude-haiku-5-5`, because a decision must
-  come back in about a second.
+- `AUTOPILOT_DECISION_PROVIDER` = `jev` (the default), `anthropic`, `clef`, or `openai`. Any other value is an error.
+- `AUTOPILOT_DECISION_MODEL` chooses the model of the provider. The defaults are `claude-haiku-5-5`, `clef`, and
+  `gpt-6-luna`. Use `clef-flash` for the smaller Clef model.
+
+| Provider | Keys | Through Aura |
+|---|---|---|
+| `jev` | `TYPESAFE_API_KEY` | Yes |
+| `anthropic` | `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) | Yes (not tested) |
+| `clef` | `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` | No: the relay does not pass Cloudflare traffic |
+| `openai` | `OPENAI_API_KEY` (`OPENAI_BASE_URL` is optional) | No: the relay does not pass OpenAI traffic |
 
 Rules of the adapter:
 
@@ -123,13 +134,18 @@ The `anthropic` provider (`AnthropicDecider`):
   second. Reflex options must stay in executors.
 - It does not answer `Box` questions.
 
-## 4. Recommended next providers
+### The `clef` and `openai` providers
 
-1. **`clef`**: Workers AI takes the Jev request shape. A small HTTP client (or `TypeSafeClient` with a different
-   base URL, if the paths match) could give calibrated probabilities, open weights, and the lowest published
-   latency. The Aura relay does not pass Cloudflare traffic, so this provider works with own keys only.
-2. **`openai`**: `/v1/decisions` maps `noul` to `predicate` and `state` to `input`. The adapter must rename the
-   fields. Own keys only, for the same reason.
+- `clef` sends Jev's request body unchanged to Workers AI and reads Jev's answer fields. It accepts the answer with
+  or without Cloudflare's `{"result": ...}` envelope, because the docs do not show which one comes back.
+- `openai` changes the names: a Noul becomes a `predicate`, a Choice's criteria become `choices`, and a Score's
+  levels become `levels` with the labels `"0"`, `"1"`, and so on. The state goes in `input` as JSON text.
+- Both use `requests`, which Autopilot already depends on. The PR adds no package.
+- Both give probabilities from the model, as Jev does.
 
-Both give native distributions. They are better fits than an LLM with stated probabilities, but we did not verify
-them with a key, so this branch does not include them.
+## 4. What is not verified
+
+- No provider other than Jev has made a live call. The tests use stand-in API objects.
+- The exact answer shapes of Workers AI (the envelope) and of `/v1/decisions` (score `probabilities`) come from
+  documentation excerpts, not from live responses.
+- `tools/decision_smoke.py` runs the live check for each provider when the keys are in `autopilot.env`.

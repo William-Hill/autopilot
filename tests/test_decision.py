@@ -49,9 +49,8 @@ def test_jev_is_the_default(monkeypatch):
 def test_the_provider_comes_from_the_environment(monkeypatch):
     monkeypatch.setenv(decision.PROVIDER_ENV, " Anthropic ")
     assert decision.provider() == "anthropic"
-    assert decision.key_names() == ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
     monkeypatch.setenv(decision.PROVIDER_ENV, "cloudflare")
-    with pytest.raises(ValueError, match="jev, anthropic"):
+    with pytest.raises(ValueError, match="jev, anthropic, clef, openai"):
         decision.provider()
 
 
@@ -79,6 +78,22 @@ def test_the_key_check_names_the_providers_key(monkeypatch):
     assert "ANTHROPIC_API_KEY" in cli.decision_key_missing()
     monkeypatch.setattr(cli.aura, "enabled", lambda: True)
     assert cli.decision_key_missing() is None
+
+
+def test_clef_needs_its_token_and_account_even_through_aura(monkeypatch):
+    for k in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv(decision.PROVIDER_ENV, "clef")
+    monkeypatch.setattr(cli.aura, "enabled", lambda: True)
+    why = cli.decision_key_missing()
+    assert "CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID" in why and "relay" in why
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "t")
+    assert decision.missing_keys() == ["CLOUDFLARE_ACCOUNT_ID"]
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "a")
+    assert cli.decision_key_missing() is None
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert decision.missing_keys("openai", aura=True) == ["OPENAI_API_KEY"]
+    assert decision.missing_keys("anthropic", aura=True) == []
 
 
 # -- the Anthropic decider -------------------------------------------------------------------------------------------
@@ -170,3 +185,110 @@ def test_the_sandbox_parent_serves_its_answers():
     res = sent[0]["result"]
     assert sent[0]["ok"] and res["choices"]["pick"]["choice"] == "b"
     assert res["choices"]["pick"]["probabilities"] == {"a": 0.25, "b": 0.75}
+
+
+# -- the decision APIs over HTTP --------------------------------------------------------------------------------------
+
+class FakeSession:
+    """Stands in for requests.Session: records each post and answers with the given JSON and status."""
+
+    def __init__(self, body, status=200):
+        self.body, self.status, self.posts = body, status, []
+
+    def post(self, url, headers=None, json=None, timeout=None):
+        self.posts.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
+        body = self.body
+        return types.SimpleNamespace(status_code=self.status, json=lambda: body, text=str(body))
+
+
+CLEF_ANSWER = {"model": "clef", "usage": {"input_tokens": 90, "output_tokens": 3}, "answers": {
+    "pick": {"type": "choice", "choice": "b", "confidence": 0.8, "probabilities": {"a": 0.2, "b": 0.8}},
+    "hurt": {"type": "noul", "noul": 0.9},
+    "danger": {"type": "score", "score": 0.4, "confidence": 0.6, "legend": {}, "probabilities": {"0": 0.6, "1": 0.4}}}}
+
+
+def questions3():
+    qs = pick({"a": "Do A", "b": "Do B"})
+    qs["hurt"] = Noul(instructions="Hurt?", criteria={"true": "Health under half"})
+    qs["danger"] = Score(instructions="Danger?", criteria=["Safe", "Deadly"])
+    return qs
+
+
+def test_clef_sends_jevs_request_to_workers_ai(monkeypatch):
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "tok")
+    monkeypatch.delenv(decision.MODEL_ENV, raising=False)
+    s = FakeSession({"success": True, "errors": [], "result": CLEF_ANSWER})  # (Cloudflare's envelope)
+    r = decision.ClefDecider(session=s).system_one(state={"hp": 3}, questions=questions3())
+    post = s.posts[0]
+    assert post["url"] == "https://api.cloudflare.com/client/v4/accounts/acct/ai/run/@cf/cloudflare/clef"
+    assert post["headers"] == {"Authorization": "Bearer tok"} and post["timeout"] == decision.HTTP_TIMEOUT
+    assert post["json"]["model"] == "clef" and post["json"]["state"] == {"hp": 3}
+    assert post["json"]["questions"]["pick"] == {"type": "choice", "instructions": "Choose the option to do now.",
+                                                 "criteria": {"a": "Do A", "b": "Do B"}}
+    assert r.choices["pick"].choice == "b" and r.choices["pick"].probabilities == {"a": 0.2, "b": 0.8}
+    assert r.nouls["hurt"].noul == 0.9 and r.scores["danger"].score == 0.4
+    assert r.usage.input_tokens == 90 and r.model == "clef"
+
+
+def test_clef_flash_and_no_envelope(monkeypatch):
+    monkeypatch.setenv(decision.MODEL_ENV, "clef-flash")
+    s = FakeSession(CLEF_ANSWER)
+    r = decision.ClefDecider(session=s).system_one(state="s", questions=questions3(), timeout=8.0)
+    assert s.posts[0]["url"].endswith("/@cf/cloudflare/clef-flash") and s.posts[0]["json"]["model"] == "clef-flash"
+    assert s.posts[0]["timeout"] == 8.0 and r.choices["pick"].choice == "b"
+
+
+def test_an_http_error_names_the_status_but_not_the_key(monkeypatch):
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "secret-token")
+    s = FakeSession({"success": False, "errors": [{"code": 10000, "message": "Authentication error"}]}, status=401)
+    with pytest.raises(RuntimeError) as e:
+        decision.ClefDecider(session=s).system_one(state={}, questions=pick({"a": "A"}))
+    assert "HTTP 401" in str(e.value) and "Authentication error" in str(e.value)
+    assert "secret-token" not in str(e.value)
+
+
+OPENAI_ANSWER = {"model": "gpt-6-luna", "usage": {"input_tokens": 120}, "answers": [
+    {"type": "choice", "name": "pick", "choice": "a", "confidence": 0.7,
+     "probabilities": [{"value": "a", "probability": 0.7}, {"value": "b", "probability": 0.3}]},
+    {"type": "predicate", "name": "hurt", "probability": 0.25},
+    {"type": "score", "name": "danger", "score": 0.9, "confidence": 0.9,
+     "probabilities": [{"value": 0, "label": "0", "probability": 0.1},
+                       {"value": 1, "label": "1", "probability": 0.9}]}]}
+
+
+def test_openai_asks_the_decisions_api_in_its_own_words(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "ok")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv(decision.MODEL_ENV, raising=False)
+    s = FakeSession(OPENAI_ANSWER)
+    r = decision.OpenAIDecider(session=s).system_one(state={"hp": 3}, questions=questions3())
+    post = s.posts[0]
+    assert post["url"] == "https://api.openai.com/v1/decisions"
+    assert post["headers"] == {"Authorization": "Bearer ok"}
+    body = post["json"]
+    assert body["model"] == "gpt-6-luna" and json.loads(body["input"]) == {"hp": 3}
+    assert body["questions"][0] == {"type": "choice", "name": "pick", "instructions": "Choose the option to do now.",
+                                    "choices": [{"value": "a", "description": "Do A"},
+                                                {"value": "b", "description": "Do B"}]}
+    assert body["questions"][1] == {"type": "predicate", "name": "hurt",
+                                    "instructions": "Hurt? True means: Health under half."}
+    assert body["questions"][2]["levels"] == [{"label": "0", "description": "Safe"},
+                                              {"label": "1", "description": "Deadly"}]
+    assert r.choices["pick"].choice == "a" and r.choices["pick"].probabilities == {"a": 0.7, "b": 0.3}
+    assert r.nouls["hurt"].noul == 0.25
+    assert r.scores["danger"].probabilities == {"0": 0.1, "1": 0.9} and r.scores["danger"].score == 0.9
+    assert r.usage.input_tokens == 120 and r.usage.output_tokens == 0
+
+
+def test_openai_refusal_raises():
+    s = FakeSession({"answers": [{"type": "refusal", "name": "pick"}]})
+    with pytest.raises(RuntimeError, match="refused"):
+        decision.OpenAIDecider(session=s).system_one(state={}, questions=pick({"a": "A"}))
+
+
+@pytest.mark.parametrize("name, cls", [("clef", "ClefDecider"), ("openai", "OpenAIDecider")])
+def test_the_http_providers_are_chosen_by_name(monkeypatch, name, cls):
+    monkeypatch.setenv(decision.PROVIDER_ENV, name)
+    c = decision.client()
+    assert type(c).__name__ == cls and c.answer_timeout == decision.HTTP_TIMEOUT
