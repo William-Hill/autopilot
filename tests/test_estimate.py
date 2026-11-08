@@ -24,7 +24,8 @@ REFERENCE = {
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     for k in ("AUTOPILOT_AGENT", "AUTOPILOT_MODEL", "AUTOPILOT_FAST", "AUTOPILOT_HELPER_MODEL", "AUTOPILOT_JEV_MODEL",
-              "AUTOPILOT_OPENCODE_PROVIDER", "AUTOPILOT_MAX_USD", "AUTOPILOT_CONFIRM_COST"):
+              "AUTOPILOT_OPENCODE_PROVIDER", "AUTOPILOT_MAX_USD", "AUTOPILOT_CONFIRM_COST",
+              "AUTOPILOT_DECISION_PROVIDER"):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -475,3 +476,13 @@ def test_a_stop_that_comes_with_the_answer_still_refuses_the_run(terminal):
 def test_the_estimate_says_that_frame_descriptions_are_not_in_the_total():
     e = est.estimate(None, agent="claude", model="claude-opus-5-5")
     assert "Not included: frame descriptions (describe_frames)" in est.text(e)
+
+
+def test_the_estimate_names_the_decision_model_that_the_run_uses(monkeypatch):
+    assert est.decision_model()[0] == "typesafe"
+    monkeypatch.setenv("AUTOPILOT_DECISION_PROVIDER", "clef")
+    e = est.estimate(None, agent="claude", model="claude-opus-5-5")
+    assert (e["decision_provider"], e["decision_model"]) == ("clef", "clef")
+    assert e["parts"]["decision"] is None and "clef" in e["missing"]
+    monkeypatch.setenv("AUTOPILOT_DECISION_PROVIDER", "nonsense")  # (the run does not start; the estimate says Jev)
+    assert est.decision_model()[0] == "typesafe"

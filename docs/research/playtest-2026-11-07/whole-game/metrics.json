@@ -1,0 +1,85 @@
+{
+ "date": "2026-11-07",
+ "game": "RenderATL Rush, main b060a24, ?render3d=1 (3D assets on)",
+ "harness": "whole-game/harness.py, written once by the Claude Code agent (claude-opus-5-5) with Jev",
+ "browser": "Chromium (Playwright), background throttling off",
+ "aura": false,
+ "providers": {
+  "jev": {
+   "model": "jev-1.13.0",
+   "result": "reached the credits",
+   "status": "done",
+   "play_seconds": 178.5,
+   "decisions": 187,
+   "latency_seconds": {
+    "median": 0.145,
+    "p90": 0.329,
+    "p99": 0.851,
+    "max": 0.919
+   },
+   "decision_errors": 0,
+   "lives_lost": 2,
+   "hit_causes": [
+    "obstacle-scope",
+    "projectile"
+   ]
+  },
+  "clef": {
+   "model": "clef",
+   "result": "reached the credits",
+   "status": "done",
+   "play_seconds": 178.4,
+   "decisions": 193,
+   "latency_seconds": {
+    "median": 0.345,
+    "p90": 0.701,
+    "p99": 1.525,
+    "max": 1.73
+   },
+   "decision_errors": 0,
+   "lives_lost": 2,
+   "hit_causes": [
+    "projectile",
+    "boss-high"
+   ]
+  },
+  "openai": {
+   "model": "gpt-6-luna",
+   "result": "reached the credits",
+   "status": "done",
+   "play_seconds": 186.0,
+   "decisions": 203,
+   "latency_seconds": {
+    "median": 0.223,
+    "p90": 0.475,
+    "p99": 0.83,
+    "max": 1.896
+   },
+   "decision_errors": 0,
+   "lives_lost": 2,
+   "hit_causes": [
+    "projectile",
+    "boss-high"
+   ]
+  },
+  "anthropic": {
+   "model": "claude-haiku-5-5",
+   "result": "reached the credits",
+   "status": "done",
+   "play_seconds": 197.4,
+   "decisions": 189,
+   "latency_seconds": {
+    "median": 0.865,
+    "p90": 1.353,
+    "p99": 2.23,
+    "max": 2.476
+   },
+   "decision_errors": 1,
+   "lives_lost": 2,
+   "hit_causes": [
+    "projectile",
+    "boss-high"
+   ]
+  }
+ }
+}

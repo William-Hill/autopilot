@@ -93,10 +93,17 @@ DECISION_COSTS = {"typesafe": typesafe_cost}
 
 
 def decision_model():
-    """The decision model and its provider: AUTOPILOT_JEV_MODEL, else runtime.JEV_MODEL, on TypeSafe."""
+    """The decision model and its provider, by AUTOPILOT_DECISION_PROVIDER (autopilot/decision.py). Jev (the default,
+    and for a wrong name: the run then does not start) is on TypeSafe, with AUTOPILOT_JEV_MODEL. Another provider has
+    no entry in DECISION_COSTS yet, so the output names its model as one with no price."""
+    from . import decision
     from .runtime import jev_model
 
-    return "typesafe", jev_model()
+    try:
+        name = decision.provider()
+    except decision.ProviderError:
+        name = "jev"
+    return ("typesafe", jev_model()) if name == "jev" else (name, decision.model_of(name))
 
 
 # -- earlier runs ------------------------------------------------------------------------------------------------------
