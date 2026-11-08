@@ -51,7 +51,9 @@ def no_user_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "load_user_keys", lambda: None)
     monkeypatch.setattr(account, "_user_env_path", lambda: str(tmp_path / "autopilot.env"))
     monkeypatch.setattr(account, "_from_user_env", {})
-    for name in ("AUTOPILOT_AURA_SERVER", "AUTOPILOT_AGENT", "AUTOPILOT_OPENCODE_PROVIDER", "AUTOPILOT_MODEL"):
+    for name in ("AUTOPILOT_AURA_SERVER", "AUTOPILOT_AGENT", "AUTOPILOT_OPENCODE_PROVIDER", "AUTOPILOT_MODEL",
+                 "AUTOPILOT_DECISION_PROVIDER", "AUTOPILOT_ANTHROPIC_DECISION_MODEL", "AUTOPILOT_CLEF_MODEL",
+                 "AUTOPILOT_OPENAI_DECISION_MODEL"):
         monkeypatch.delenv(name, raising=False)
 
 

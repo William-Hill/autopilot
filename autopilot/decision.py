@@ -28,7 +28,6 @@ import threading
 from dataclasses import dataclass, field
 
 PROVIDER_ENV = "AUTOPILOT_DECISION_PROVIDER"
-MODEL_ENV = "AUTOPILOT_DECISION_MODEL"
 PROVIDERS = ("jev", "anthropic", "clef", "openai")
 THROUGH_AURA = ("jev", "anthropic")  # (the providers whose traffic Aura's relay passes)
 # A small, fast model: a decision must come back in about a second
@@ -40,8 +39,9 @@ CLEF_URL = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/@cf/c
 OPENAI_MODEL = "gpt-6-luna"
 OPENAI_URL = "https://api.openai.com/v1"
 HTTP_TIMEOUT = 2.0
-# What a model of each provider starts with: AUTOPILOT_DECISION_MODEL is one setting for every provider
-MODEL_PREFIXES = {"anthropic": ("claude-",), "clef": ("clef",), "openai": ("gpt-",)}
+# Each provider's own model setting (as AUTOPILOT_JEV_MODEL is Jev's), and its model when the setting is empty
+MODEL_ENVS = {"anthropic": "AUTOPILOT_ANTHROPIC_DECISION_MODEL", "clef": "AUTOPILOT_CLEF_MODEL",
+              "openai": "AUTOPILOT_OPENAI_DECISION_MODEL"}
 DEFAULT_MODELS = {"anthropic": ANTHROPIC_MODEL, "clef": CLEF_MODEL, "openai": OPENAI_MODEL}
 # The keys a provider needs: each group is one setting, and any name in a group gives it
 KEYS = {"jev": [("TYPESAFE_API_KEY",)], "anthropic": [("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")],
@@ -49,35 +49,23 @@ KEYS = {"jev": [("TYPESAFE_API_KEY",)], "anthropic": [("ANTHROPIC_API_KEY", "ANT
 
 
 class ProviderError(ValueError):
-    """A provider or model setting that Autopilot cannot use."""
+    """An AUTOPILOT_DECISION_PROVIDER that Autopilot cannot use. Its message says where to correct it."""
 
 
 def provider():
     """The decision model's provider by AUTOPILOT_DECISION_PROVIDER: jev (the default), anthropic, clef or openai."""
     name = (os.environ.get(PROVIDER_ENV) or "").strip().lower() or "jev"
     if name not in PROVIDERS:
-        raise ProviderError(f"{PROVIDER_ENV}={name!r}: use one of {', '.join(PROVIDERS)}")
+        from .account import _user_env_path
+
+        raise ProviderError(f"{PROVIDER_ENV}={name!r}: use one of {', '.join(PROVIDERS)}. Correct the line in "
+                            f"{_user_env_path()}.")
     return name
 
 
-def model_of(name, default):
-    """The model of provider name: AUTOPILOT_DECISION_MODEL when it is one of that provider's, else default.
-    A model of another provider (left from an earlier choice) is an error."""
-    chosen = (os.environ.get(MODEL_ENV) or "").strip()
-    if not chosen:
-        return default
-    if not chosen.startswith(MODEL_PREFIXES[name]):
-        raise ProviderError(f"{MODEL_ENV}={chosen!r} is not a model of {name} (its models start with "
-                            f"{' or '.join(MODEL_PREFIXES[name])}): change or remove the line")
-    return chosen
-
-
-def check():
-    """The provider, once its settings are usable (a ProviderError says what to change)."""
-    name = provider()
-    if name in DEFAULT_MODELS:
-        model_of(name, DEFAULT_MODELS[name])
-    return name
+def model_of(name):
+    """The model of provider name: its own setting (MODEL_ENVS), else its default."""
+    return (os.environ.get(MODEL_ENVS[name]) or "").strip() or DEFAULT_MODELS[name]
 
 
 def missing_keys(name=None, aura=False):
@@ -154,11 +142,24 @@ SYSTEM = (
 )
 
 
+def _json_text(value):
+    """A str as it is; anything else as JSON."""
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
 def _text(content):
     """A question's instructions or criterion as text for the prompt."""
-    if content is None:
-        return ""
-    return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+    return "" if content is None else _json_text(content)
+
+
+def _means(q):
+    """What a Noul's yes and no mean (its criteria), as sentences."""
+    crit = q.criteria or {}
+    return [f"{k.capitalize()} means: {_text(crit[k])}" for k in ("true", "false") if crit.get(k)]
+
+
+def _number(v, default=0.0):
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else default
 
 
 def _kind(q):
@@ -176,9 +177,7 @@ def prompt_and_schema(state, questions):
             lines.append(f"Question `{qid}` (choice): {_text(q.instructions)}\n  Options:\n{opts}")
             props[qid] = _probabilities(names)
         elif kind == "noul":
-            crit = q.criteria or {}
-            extra = "".join(f"\n  {k.capitalize()} means: {_text(crit.get(k))}" for k in ("true", "false")
-                            if crit.get(k))
+            extra = "".join(f"\n  {m}" for m in _means(q))
             lines.append(f"Question `{qid}` (yes/no): {_text(q.instructions)}{extra}")
             props[qid] = {"type": "number"}
         elif kind == "score":
@@ -188,8 +187,7 @@ def prompt_and_schema(state, questions):
         else:
             raise ValueError(f"question {qid}: the anthropic decision model cannot answer a {kind} question")
     schema = {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
-    state_text = state if isinstance(state, str) else json.dumps(state, ensure_ascii=False)
-    return f"state:\n{state_text}\n\n" + "\n\n".join(lines), schema
+    return f"state:\n{_json_text(state)}\n\n" + "\n\n".join(lines), schema
 
 
 def _probabilities(names):
@@ -200,10 +198,8 @@ def _probabilities(names):
 def normalized(values, names):
     """values ({name: number}) as probabilities over names: negatives and non-numbers as 0, summing to 1 (all
     equal when every one is 0)."""
-    clean = {}
-    for n in names:
-        v = values.get(n) if isinstance(values, dict) else None
-        clean[n] = float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else 0.0
+    values = values if isinstance(values, dict) else {}
+    clean = {n: max(0.0, _number(values.get(n))) for n in names}
     total = sum(clean.values())
     if total <= 0:
         return {n: 1.0 / len(names) for n in names} if names else {}
@@ -221,7 +217,7 @@ def answers_from(data, questions):
             best = max(probs, key=probs.get)
             choices[qid] = ChoiceAnswer(choice=best, probabilities=probs, confidence=probs[best])
         elif kind == "noul":
-            p = float(got) if isinstance(got, (int, float)) and not isinstance(got, bool) else 0.5
+            p = _number(got, 0.5)
             nouls[qid] = NoulAnswer(noul=min(1.0, max(0.0, p)))
         elif kind == "score":
             levels = [str(i) for i in range(len(q.criteria))]
@@ -232,17 +228,23 @@ def answers_from(data, questions):
 
 
 class AnthropicDecider:
-    """The decision model as a Claude model (AUTOPILOT_DECISION_MODEL, by default ANTHROPIC_MODEL), asked through
-    the Messages API with a JSON schema. Through Aura, ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY point at its relay."""
+    """The decision model as a Claude model (AUTOPILOT_ANTHROPIC_DECISION_MODEL, by default ANTHROPIC_MODEL), asked
+    through the Messages API with a JSON schema. Through Aura, ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY point at its
+    relay."""
 
     answer_timeout = ANTHROPIC_TIMEOUT  # (the runtime's limit for an answer: runtime.Runtime.answers)
 
     def __init__(self, model=None, sdk=None):
-        self.model = model or model_of("anthropic", ANTHROPIC_MODEL)
+        self.model = model or model_of("anthropic")
         if sdk is None:
             import anthropic
+            import httpx2
 
-            sdk = anthropic.Anthropic(timeout=ANTHROPIC_TIMEOUT, max_retries=1)
+            from .runtime import KEEPALIVE
+
+            # (idle connections kept as long as Jev's: a decision after an idle stretch needs no new connection)
+            http = anthropic.DefaultHttpxClient(limits=httpx2.Limits(keepalive_expiry=KEEPALIVE))
+            sdk = anthropic.Anthropic(timeout=ANTHROPIC_TIMEOUT, max_retries=1, http_client=http)
         self.sdk = sdk
 
     def request(self, state, questions):
@@ -255,7 +257,7 @@ class AnthropicDecider:
             req["thinking"] = {"type": "disabled"}  # (a decision is a fast judgment: no thinking, less latency)
         return req
 
-    def system_one(self, state, questions, timeout=None, retry=None, **_):
+    def system_one(self, state, questions, timeout=None, **_):
         sdk = self.sdk.with_options(timeout=timeout) if timeout else self.sdk
         r = sdk.messages.create(**self.request(state, questions))
         if getattr(r, "stop_reason", None) == "refusal":
@@ -266,21 +268,16 @@ class AnthropicDecider:
         except ValueError as e:
             raise RuntimeError(f"the decision model's answer is not JSON ({e}): {text[:200]!r}") from None
         choices, nouls, scores = answers_from(data, questions)
+        from .runtime import answer_as_sent
+
         u = getattr(r, "usage", None)
-        try:
-            raw = r.model_dump(mode="json")
-        except Exception:
-            raw = None
+        raw = answer_as_sent(r)
         return Answer(model=getattr(r, "model", None) or self.model, choices=choices, nouls=nouls, scores=scores,
                       usage=Usage(getattr(u, "input_tokens", 0) or 0, getattr(u, "output_tokens", 0) or 0),
                       raw=raw)
 
 
 # -- decision APIs over HTTP ------------------------------------------------------------------------------------------
-
-def _number(v, default=0.0):
-    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else default
-
 
 def _answer(model, out, raw, questions, choices, nouls, scores):
     """The Answer from a decision API's answers; an error when a question has no answer (the runtime counts it)."""
@@ -300,7 +297,7 @@ class HTTPDecider:
     answer_timeout = HTTP_TIMEOUT
 
     def __init__(self, model=None, session=None):
-        self.model = model or model_of(self.name, self.default_model)
+        self.model = model or model_of(self.name)
         self._session = session
         self._local = threading.local()
 
@@ -327,14 +324,13 @@ class HTTPDecider:
 
 
 class ClefDecider(HTTPDecider):
-    """Cloudflare's Clef (CLEF_MODEL; AUTOPILOT_DECISION_MODEL=clef-flash for the smaller one) on Workers AI. It takes
+    """Cloudflare's Clef (CLEF_MODEL; AUTOPILOT_CLEF_MODEL=clef-flash for the smaller one) on Workers AI. It takes
     Jev's request (model, state, questions) and gives Jev's answers. Keys: CLOUDFLARE_API_TOKEN (a Workers AI token)
     and CLOUDFLARE_ACCOUNT_ID."""
 
     name = "clef"
-    default_model = CLEF_MODEL
 
-    def system_one(self, state, questions, timeout=None, retry=None, **_):
+    def system_one(self, state, questions, timeout=None, **_):
         account = (os.environ.get("CLOUDFLARE_ACCOUNT_ID") or "").strip()
         token = (os.environ.get("CLOUDFLARE_API_TOKEN") or "").strip()
         body = {"model": self.model, "state": state,
@@ -361,7 +357,6 @@ class OpenAIDecider(HTTPDecider):
     changes the API root)."""
 
     name = "openai"
-    default_model = OPENAI_MODEL
 
     @staticmethod
     def question(qid, q):
@@ -372,19 +367,18 @@ class OpenAIDecider(HTTPDecider):
             return {"type": "choice", "name": qid, "instructions": text,
                     "choices": [{"value": n, "description": _text(d) or n} for n, d in q.criteria.items()]}
         if kind == "noul":
-            crit = q.criteria or {}
-            extra = "".join(f" {k.capitalize()} means: {_text(crit.get(k))}." for k in ("true", "false") if crit.get(k))
+            extra = "".join(f" {m}." for m in _means(q))
             return {"type": "predicate", "name": qid, "instructions": text + extra}
         if kind == "score":
             return {"type": "score", "name": qid, "instructions": text,
                     "levels": [{"label": str(i), "description": _text(c) or str(i)} for i, c in enumerate(q.criteria)]}
         raise ValueError(f"question {qid}: the openai decision model cannot answer a {kind} question")
 
-    def system_one(self, state, questions, timeout=None, retry=None, **_):
+    def system_one(self, state, questions, timeout=None, **_):
         root = ((os.environ.get("OPENAI_BASE_URL") or "").strip() or OPENAI_URL).rstrip("/")
         token = (os.environ.get("OPENAI_API_KEY") or "").strip()
         body = {"model": self.model,
-                "input": state if isinstance(state, str) else json.dumps(state, ensure_ascii=False),
+                "input": _json_text(state),
                 "questions": [self.question(k, q) for k, q in questions.items()]}
         data = self.post(f"{root}/decisions", {"Authorization": f"Bearer {token}"}, body, timeout)
         choices, nouls, scores = {}, {}, {}

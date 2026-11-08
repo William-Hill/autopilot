@@ -98,8 +98,10 @@ agent read the other sources on the same day.
 `autopilot/decision.py` names the interface that the code already used. It adds one setting:
 
 - `AUTOPILOT_DECISION_PROVIDER` = `jev` (the default), `anthropic`, `clef`, or `openai`. Any other value is an error.
-- `AUTOPILOT_DECISION_MODEL` chooses the model of the provider. The defaults are `claude-haiku-5-5`, `clef`, and
-  `gpt-6-luna`. Use `clef-flash` for the smaller Clef model.
+- Each provider has its own model setting, as Jev has `AUTOPILOT_JEV_MODEL`:
+  - `AUTOPILOT_ANTHROPIC_DECISION_MODEL`. The default is `claude-haiku-5-5`.
+  - `AUTOPILOT_CLEF_MODEL`. The default is `clef`. Use `clef-flash` for the smaller Clef model.
+  - `AUTOPILOT_OPENAI_DECISION_MODEL`. The default is `gpt-6-luna`.
 
 | Provider | Keys | Through Aura |
 |---|---|---|

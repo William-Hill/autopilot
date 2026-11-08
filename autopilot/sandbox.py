@@ -364,8 +364,7 @@ class RemoteJev:
 
     def __init__(self, link, answer_timeout=None):
         self.link = link
-        if isinstance(answer_timeout, (int, float)) and answer_timeout > 0:
-            self.answer_timeout = answer_timeout  # (the parent's decision model's: runtime.Runtime.answer_limit)
+        self.answer_timeout = answer_timeout  # (the parent's decision model's: runtime.Runtime.answer_limit)
 
     def system_one(self, state, questions):
         dumps = {k: q.model_dump(mode="json", exclude_none=True) for k, q in questions.items()}
