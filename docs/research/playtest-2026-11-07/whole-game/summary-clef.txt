@@ -1,0 +1,115 @@
+Waiting for the plugin on ws://127.0.0.1:8765/v1/bridge ...
+Connected: renderatl-rush (game, Phaser (a 2D game in the web browser))
+Harness RushHarness  goal: 'Play RenderATL Rush from the title screen to the end credits: start a run, clear all 6 stages in order (run right, jump hazards, RENDER blockers with J, collect what each stage objective needs; Stage 2 is a drive: exit the Connector, drive downtown and park at RenderATL before the clock runs out; beat the Main Stage boss) without losing all lives'
+Ended: status done at t=178.4s  status=done note='reached the credits' evidence={"hits": [{"t": 395.3, "stage": "Main Stage", "distance": 1715, "lives_left": 4, "life_lost": true, "cause": "projectile", "near": ["merge@49", "flaky@90", "glitch@-137"], "boss_phase": null}, {"t": 406.2, "stage": "Main Stage", "distance": 3800, "lives_left": 3, "life_lost": true, "cause": "boss-high", "near": [], "boss_phase": "locked"}], "scenes": [[240.5, "gameover"], [246.7, "stage"], [257.3,
+Decisions by Jev: 193
+
+Options (started / worked / failed / unknown / interrupted / timed out):
+  run_and_collect: 18 / 13 / 0 / 0 / 5 / 0 / 0
+  drive_fast: 15 / 15 / 0 / 0 / 0 / 0 / 0
+  confirm: 5 / 0 / 0 / 0 / 5 / 0 / 0
+  finish_results: 1 / 0 / 0 / 0 / 1 / 0 / 0
+  drive_careful: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  wait_results: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  hold_and_render: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  finish_results ended because: switched to run_and_collect x1
+  run_and_collect ended because: ran x13; switched to confirm x4; switched to hold_and_render x1
+  confirm ended because: switched to run_and_collect x4; switched to drive_careful x1
+  drive_careful ended because: drove x1
+  drive_fast ended because: drove x15
+  wait_results ended because: waited x1
+  hold_and_render ended because: ran x1
+
+Executor steps (steps, ms a step median/p90/max, waits on the game a step mean/max; a tick is 67 ms at tick_hz 15, the loop ran 14.0 ticks/s):
+  run_and_collect: 1265 steps, 1/2/17 ms, 1.0/1 waits
+  drive_fast: 871 steps, 1/3/5 ms, 1.0/1 waits
+  (idle): 111 steps, 1/2/4 ms, 0.8/1 waits
+  finish_results: 89 steps, 0/0/1 ms, 0.0/0 waits
+  drive_careful: 58 steps, 1/2/4 ms, 1.0/1 waits
+  confirm: 50 steps, 0/0/0 ms, 0.0/0 waits
+  hold_and_render: 42 steps, 1/2/2 ms, 1.0/1 waits
+  wait_results: 17 steps, 0/0/0 ms, 0.0/0 waits
+
+Timeline (t: option, p, how it ended, seconds):
+  t=   1.3 finish_results p=0.94 -> stopped (switched to run_and_collect) 6.27s
+  t=   7.6 run_and_collect p=0.73 -> worked (ran) 6.05s
+  t=  14.2 run_and_collect p=0.95 -> stopped (switched to confirm) 2.86s
+  t=  17.0 confirm p=0.71 -> stopped (switched to drive_careful) 0.51s
+  t=  17.5 drive_careful p=0.50 -> worked (drove) 4.12s
+  t=  21.9 drive_fast p=0.66 -> worked (drove) 4.08s
+  t=  26.3 drive_fast p=0.78 -> worked (drove) 4.08s
+  t=  30.8 drive_fast p=0.79 -> worked (drove) 4.06s
+  t=  35.1 drive_fast p=0.75 -> worked (drove) 4.07s
+  t=  39.3 drive_fast p=0.79 -> worked (drove) 4.07s
+  t=  43.9 drive_fast p=0.78 -> worked (drove) 4.04s
+  t=  48.2 drive_fast p=0.85 -> worked (drove) 4.06s
+  t=  52.5 drive_fast p=0.64 -> worked (drove) 4.08s
+  t=  56.9 drive_fast p=0.67 -> worked (drove) 4.02s
+  t=  61.4 drive_fast p=0.72 -> worked (drove) 4.07s
+  t=  66.3 drive_fast p=0.68 -> worked (drove) 4.06s
+  t=  71.1 drive_fast p=0.85 -> worked (drove) 4.06s
+  t=  75.6 drive_fast p=0.76 -> worked (drove) 4.07s
+  t=  80.1 drive_fast p=0.71 -> worked (drove) 4.08s
+  t=  84.6 drive_fast p=0.84 -> worked (drove) 3.58s
+  t=  88.4 wait_results p=1.00 -> worked (waited) 1.12s
+  t=  89.8 confirm p=0.89 -> stopped (switched to run_and_collect) 0.63s
+  t=  90.4 run_and_collect p=0.90 -> worked (ran) 6.14s
+  t=  96.7 run_and_collect p=0.87 -> worked (ran) 6.05s
+  t= 103.1 run_and_collect p=0.89 -> worked (ran) 6.12s
+  t= 109.6 run_and_collect p=0.83 -> worked (ran) 6.14s
+  t= 116.2 run_and_collect p=0.86 -> worked (ran) 6.04s
+  t= 122.5 run_and_collect p=0.87 -> worked (ran) 6.04s
+  t= 128.7 run_and_collect p=0.84 -> stopped (switched to confirm) 5.06s
+  t= 133.8 confirm p=0.61 -> stopped (switched to run_and_collect) 0.42s
+  t= 134.2 run_and_collect p=0.55 -> worked (ran) 6.24s
+  t= 140.6 run_and_collect p=0.54 -> worked (ran) 6.03s
+  t= 147.2 run_and_collect p=0.67 -> stopped (switched to confirm) 1.96s
+  t= 149.2 confirm p=0.91 -> stopped (switched to run_and_collect) 0.7s
+  t= 149.9 run_and_collect p=0.72 -> worked (ran) 6.04s
+  t= 156.2 run_and_collect p=0.86 -> worked (ran) 6.03s
+  t= 162.4 run_and_collect p=0.65 -> stopped (switched to hold_and_render) 4.5s
+  t= 166.9 hold_and_render p=0.54 -> worked (ran) 2.96s
+  t= 170.2 run_and_collect p=0.83 -> stopped (switched to confirm) 0.49s
+  t= 170.7 confirm p=0.85 -> stopped (switched to run_and_collect) 0.71s
+  t= 171.4 run_and_collect p=0.77 -> worked (ran) 6.07s
+  t= 177.6 run_and_collect p=0.93 -> worked (ran) 0.71s
+
+Jev: 193 answers, latency median 0.34s; actions {'started': 30, 'kept': 150, 'switched': 11, 'kept_running': 2}
+First decision Jev saw (state): {"goal": "Play RenderATL Rush from the title screen to the end credits: start a run, clear all 6 stages in order (run right, jump hazards, RENDER blockers with J, collect what each stage objective needs; Stage 2 is a drive: exit the Connector, drive downtown and park at RenderATL before the clock runs out; beat the Main Stage boss) without losing all lives", "situation": {"scene": "gameover", "screen_texts": ["34,390", "+4,500", "+2,000", "+4,850", "RANKED SCORE", "Connector medal", "Blocker control", "+0"]}, "options": {"finish_results": {}, "confirm": {}}, "now_doing": null, "recent": []}
+Its answer: {"finish_results": 0.943, "confirm": 0.057}
+
+Situation over time (every ~5 s):
+  t=   0.0 {"scene": "gameover", "screen_texts": ["34,390", "+4,500", "+2,000", "+4,850", "RANKED SCORE", "Connector medal", "Blocker control", "+0"]}  [running] options=['finish_results', 'confirm']
+  t=   5.6 {"scene": "gameover", "screen_texts": ["34,390", "RANKED SCORE", "8,300", "7,100", "6,000", "9,600", "10,900", "4,900"]}  [running] options=['finish_results', 'confirm']
+  t=  11.2 {"scene": "stage", "stage": "1/6 Airport Arrival", "objective": "Spec cards 1/7", "distance_run": 1037, "lives": 5, "hits_taken": 0, "hair_charge": "0/5", "holding_badge": false, "next_obstacle": null, "next_enemy": null, "next_projectile": null, "next_spec_card": {"what": "spec card", "gap_px": 205  [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t=  16.8 {"scene": "transition", "screen_texts": ["Objective complete", "+6,130", "score", "CHALLENGE EARNED \u00b7 Smooth landing", "STAGE CLEAR", "STAGE CLEAR", "\u2713", "Connector Sprint"]}  [running] options=['confirm', 'press_space', 'skip_cutscene']
+  t=  22.5 {"scene": "driving3d", "stage": "2/6 Connector Sprint (drive downtown, park at RenderATL)", "route_progress_m": "86/1662", "route_gates": "0/4", "lives": 5, "race_status": "playing", "time_left_s": 110.2, "speed_mps": 31.1, "next_turn_in_m": 973}  [running] options=['drive_fast', 'drive_careful', 'reset_to_checkpoint']
+  t=  28.0 {"scene": "driving3d", "stage": "2/6 Connector Sprint (drive downtown, park at RenderATL)", "route_progress_m": "271/1662", "route_gates": "0/4", "lives": 5, "race_status": "playing", "time_left_s": 104.7, "speed_mps": 37.8, "next_turn_in_m": 788}  [running] options=['drive_fast', 'drive_careful', 'reset_to_checkpoint']
+  t=  33.6 {"scene": "driving3d", "stage": "2/6 Connector Sprint (drive downtown, park at RenderATL)", "route_progress_m": "481/1662", "route_gates": "0/4", "lives": 5, "race_status": "playing", "time_left_s": 99.1, "speed_mps": 37.4, "next_turn_in_m": 578}  [running] options=['drive_fast', 'drive_careful', 'reset_to_checkpoint']
+  t=  39.2 {"scene": "driving3d", "stage": "2/6 Connector Sprint (drive downtown, park at RenderATL)", "route_progress_m": "691/1662", "route_gates": "0/4", "lives": 5, "race_status": "playing", "time_left_s": 93.5, "speed_mps": 37.6, "next_turn_in_m": 368}  [running] options=['drive_fast', 'drive_careful', 'reset_to_checkpoint']
+  t=  44.8 {"scene": "driving3d", "stage": "2/6 Connector Sprint (drive downtown, park at RenderATL)", "route_progress_m": "900/1662", "route_gates": "0/4", "lives": 5, "race_status": "playing", "time_left_s": 87.9, "speed_mps": 37.5, "next_turn_in_m": 159}  [running] options=['drive_fast', 'drive_careful', 'reset_to_checkpoint']
+  t=  50.4 {"scene": "driving3d", "stage": "2/6 Connector Sprint (drive downtown, park at RenderATL)", "route_progress_m": "1057/1662", "route_gates": "1/4", "lives": 5, "race_status": "playing", "time_left_s": 82.3, "speed_mps": 17.5, "next_turn_in_m": 2}  [running] options=['drive_fast', 'drive_careful', 'reset_to_checkpoint']
+  t=  56.1 {"scene": "driving3d", "stage": "2/6 Connector Sprint (drive downtown, park at RenderATL)", "route_progress_m": "1142/1662", "route_gates": "1/4", "lives": 5, "race_status": "playing", "time_left_s": 76.7, "speed_mps": 17.3, "next_turn_in_m": -82}  [running] options=['drive_fast', 'drive_careful', 'reset_to_checkpoint']
+  t=  61.6 {"scene": "driving3d", "stage": "2/6 Connector Sprint (drive downtown, park at RenderATL)", "route_progress_m": "1279/1662", "route_gates": "2/4", "lives": 5, "race_status": "playing", "time_left_s": 71.1, "speed_mps": 9.3, "next_turn_in_m": 31}  [running] options=['drive_fast', 'drive_careful', 'reset_to_checkpoint']
+  t=  67.3 {"scene": "driving3d", "stage": "2/6 Connector Sprint (drive downtown, park at RenderATL)", "route_progress_m": "1328/1662", "route_gates": "2/4", "lives": 5, "race_status": "playing", "time_left_s": 65.5, "speed_mps": 8.3, "next_turn_in_m": -16}  [running] options=['drive_fast', 'drive_careful', 'reset_to_checkpoint']
+  t=  72.9 {"scene": "driving3d", "stage": "2/6 Connector Sprint (drive downtown, park at RenderATL)", "route_progress_m": "1440/1662", "route_gates": "3/4", "lives": 5, "race_status": "playing", "time_left_s": 59.8, "speed_mps": 21.4, "next_turn_in_m": 49}  [running] options=['drive_fast', 'drive_careful', 'reset_to_checkpoint']
+  t=  78.4 {"scene": "driving3d", "stage": "2/6 Connector Sprint (drive downtown, park at RenderATL)", "route_progress_m": "1493/1662", "route_gates": "3/4", "lives": 5, "race_status": "playing", "time_left_s": 54.4, "speed_mps": 8.4, "next_turn_in_m": -3}  [running] options=['drive_fast', 'drive_careful', 'reset_to_checkpoint']
+  t=  83.9 {"scene": "driving3d", "stage": "2/6 Connector Sprint (drive downtown, park at RenderATL)", "route_progress_m": "1571/1662", "route_gates": "4/4", "lives": 5, "race_status": "playing", "time_left_s": 48.9, "speed_mps": 32.0}  [running] options=['drive_fast', 'drive_careful', 'reset_to_checkpoint']
+  t=  89.5 {"scene": "driving3d", "stage": "2/6 Connector Sprint (drive downtown, park at RenderATL)", "route_progress_m": "1642/1662", "route_gates": "4/4", "lives": 5, "race_status": "won", "time_left_s": 44.6, "speed_mps": 0}  [running] options=['wait_results']
+  t=  94.9 {"scene": "stage", "stage": "3/6 Badge Pickup", "objective": "Gates cleared 0/5", "distance_run": 780, "lives": 5, "hits_taken": 0, "hair_charge": "5/5", "holding_badge": false, "next_obstacle": null, "next_enemy": {"what": "gatekeeper", "gap_px": 244}, "next_projectile": null, "next_spec_card": nul  [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t= 100.0 {"scene": "stage", "stage": "3/6 Badge Pickup", "objective": "Gates cleared 0/5", "distance_run": 1258, "lives": 5, "hits_taken": 0, "hair_charge": "5/5", "holding_badge": true, "next_obstacle": {"what": "gate", "gap_px": 449, "state": "locked"}, "next_enemy": {"what": "gatekeeper", "gap_px": 254},   [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t= 105.7 {"scene": "stage", "stage": "3/6 Badge Pickup", "objective": "Gates cleared 1/5", "distance_run": 1827, "lives": 5, "hits_taken": 0, "hair_charge": "5/5", "holding_badge": false, "next_obstacle": {"what": "gate", "gap_px": 538, "state": "locked"}, "next_enemy": {"what": "gatekeeper", "gap_px": 230},  [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t= 111.3 {"scene": "stage", "stage": "3/6 Badge Pickup", "objective": "Gates cleared 2/5", "distance_run": 2483, "lives": 5, "hits_taken": 0, "hair_charge": "5/5", "holding_badge": false, "next_obstacle": {"what": "gate", "gap_px": 543, "state": "locked"}, "next_enemy": {"what": "gatekeeper", "gap_px": 228},  [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t= 116.9 {"scene": "stage", "stage": "3/6 Badge Pickup", "objective": "Gates cleared 3/5", "distance_run": 3137, "lives": 5, "hits_taken": 0, "hair_charge": "5/5", "holding_badge": false, "next_obstacle": {"what": "gate", "gap_px": 549, "state": "locked"}, "next_enemy": {"what": "gatekeeper", "gap_px": 245},  [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t= 122.5 {"scene": "stage", "stage": "3/6 Badge Pickup", "objective": "Gates cleared 3/5", "distance_run": 4317, "lives": 5, "hits_taken": 0, "hair_charge": "0/5", "holding_badge": true, "next_obstacle": null, "next_enemy": {"what": "gatekeeper", "gap_px": 443}, "next_projectile": null, "next_spec_card": nul  [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t= 128.1 {"scene": "stage", "stage": "3/6 Badge Pickup", "objective": "Gates cleared 4/5", "distance_run": 5043, "lives": 5, "hits_taken": 0, "hair_charge": "0/5", "holding_badge": false, "next_obstacle": {"what": "gate", "gap_px": 624, "state": "locked"}, "next_enemy": {"what": "gatekeeper", "gap_px": 372},  [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t= 133.7 {"scene": "transition", "screen_texts": ["+12,293", "Cleared with time to spare", "CHALLENGE EARNED \u00b7 Perfect check-in", "score", "GOLD MEDAL", "STAGE CLEAR", "\ud83e\udd47", "STAGE 3 \u00b7 BADGE PICKUP"]}  [running] options=['confirm', 'press_space', 'skip_cutscene']
+  t= 139.3 {"scene": "stage", "stage": "4/6 Vendor Hall", "objective": "Blockers punched 2/5", "distance_run": 1560, "lives": 5, "hits_taken": 0, "hair_charge": "1/5", "holding_badge": false, "next_obstacle": {"what": "ambiguity", "gap_px": 546, "state": "rising"}, "next_enemy": null, "next_projectile": null,   [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t= 144.9 {"scene": "stage", "stage": "4/6 Vendor Hall", "objective": "Blockers punched 3/5", "distance_run": 3574, "lives": 5, "hits_taken": 0, "hair_charge": "3/5", "holding_badge": false, "next_obstacle": null, "next_enemy": null, "next_projectile": null, "next_spec_card": {"what": "spec card", "gap_px": 1  [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t= 150.5 {"scene": "stage", "stage": "5/6 Main Stage", "objective": "Distance 155/3800", "distance_run": 155, "lives": 5, "hits_taken": 0, "hair_charge": "4/5", "holding_badge": false, "next_obstacle": null, "next_enemy": null, "next_projectile": null, "next_spec_card": null, "next_badge": null, "boss": null  [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t= 156.2 {"scene": "stage", "stage": "5/6 Main Stage", "objective": "Distance 2009/3800", "distance_run": 2009, "lives": 4, "hits_taken": 1, "hair_charge": "5/5", "holding_badge": false, "next_obstacle": {"what": "stale", "gap_px": 332, "state": "vulnerable"}, "next_enemy": null, "next_projectile": {"what":   [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t= 161.8 {"scene": "stage", "stage": "5/6 Main Stage", "objective": "Distance 3800/3800", "distance_run": 3800, "lives": 4, "hits_taken": 1, "hair_charge": "3/5", "holding_badge": false, "next_obstacle": null, "next_enemy": null, "next_projectile": null, "next_spec_card": {"what": "spec card", "gap_px": 110}  [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t= 167.4 {"scene": "stage", "stage": "5/6 Main Stage", "objective": "Distance 3800/3800", "distance_run": 3800, "lives": 3, "hits_taken": 2, "hair_charge": "3/5", "holding_badge": false, "next_obstacle": null, "next_enemy": null, "next_projectile": null, "next_spec_card": null, "next_badge": null, "boss": {"  [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t= 173.0 {"scene": "stage", "stage": "6/6 Afterparty Sprint", "objective": "Clean streak 577/2600", "distance_run": 577, "lives": 3, "hits_taken": 2, "hair_charge": "3/5", "holding_badge": false, "next_obstacle": null, "next_enemy": null, "next_projectile": null, "next_spec_card": {"what": "spec card", "gap_  [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+  t= 177.6 {"scene": "stage", "stage": "6/6 Afterparty Sprint", "objective": "Clean streak 2314/2600", "distance_run": 2314, "lives": 3, "hits_taken": 2, "hair_charge": "5/5", "holding_badge": false, "next_obstacle": {"what": "flaky", "gap_px": 548, "state": "vulnerable"}, "next_enemy": null, "next_projectile"  [running] options=['run_safe', 'run_and_collect', 'hold_and_render']
+EXIT=0

@@ -1,0 +1,119 @@
+Waiting for the plugin on ws://127.0.0.1:8765/v1/bridge ...
+Connected: renderatl-rush (game, Three.js (a game in the web browser))
+Harness FreightLiftHarness  goal: 'Freight-lift escape (side view, keyboard only): reset the upper breaker at the top of the shaft and walk out through the service door on the top landing. Break the lift lock (2 bolt hits), ride lift A, ride lift B until it stalls, shoot the jammer (3 hits), step on the floor switch, ride the repaired lift B to the upper landing, use the shuttles and catwalks (live rails: off -> warn -> live, standing on a live rail costs a life), climb to the top, touch the breaker, then stand in the opened door.'
+Ended: status done at t=42.6s  status=done note='cleared in 39.8 s' evidence={"clear_seconds": 39.8, "lives": 5, "lives_lost": [], "falls_game_counted": [], "drops_to_lower_surface": [{"t_play": 16.47, "from": "liftB", "to": "side", "dropped_px": 60, "x": 715}], "retries": 0, "route": ["landing", "liftA", "ledge", "liftB", "side", "upper", "shuttle1", "catwalk1", "shuttle2", "catwalk2", "top"], "rail_hits": {"rail1": 0, "rail2": 0}, "card": false}
+Decisions by Jev: 278
+
+Plan (the steps in order):
+  1. break_lock: done at t=8.8s  (Break the lift lock with 2 render bolts from the fixed landing)
+  2. ride_to_lift_b: done at t=18.7s  (Ride lift A up, cross the safe ledge, ride lift B until it stalls)
+  3. clear_jammer: done at t=21.7s  (Shoot the jammer (3 hits) from the side landing)
+  4. repair_lift: done at t=21.8s  (Step on the floor switch to repair lift B)
+  5. reach_upper: done at t=28.6s  (Ride repaired lift B up and jump onto the upper landing)
+  6. climb_to_top: done at t=41.1s  (Shuttle 1, catwalk 1 (rail 1), shuttle 2, catwalk 2 (rail 2), then the top landing)
+  7. reset_breaker: done at t=41.5s  (Walk into the upper breaker on the top landing)
+  8. exit_door: done at t=42.6s  (Stand in the service door once it is open)
+
+Options (started / worked / failed / unknown / interrupted / timed out):
+  jump_to_fixed_landing: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  shoot_the_lock: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  jump_onto_lift_A_when_low: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  jump_to_ledge_at_top: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  walk_onto_lift_B: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  wait_for_lift_B_to_stop_then_step_left: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  shoot_the_jammer: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  step_on_the_switch: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  jump_onto_lift_B_when_low: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  jump_to_upper_at_top: 1 / 0 / 0 / 0 / 1 / 0 / 0
+  jump_left_now: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  jump_onto_shuttle_1_when_near: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  jump_to_catwalk_1_at_left_end: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  cross_rail_1_when_it_turns_off: 1 / 0 / 1 / 0 / 0 / 0 / 0
+  jump_onto_shuttle_2_when_above: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  jump_to_catwalk_2_at_right_end: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  cross_rail_2_when_it_turns_off: 1 / 0 / 1 / 0 / 0 / 0 / 0
+  jump_to_top_landing: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  walk_to_breaker: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  walk_out_the_door_when_open: 1 / 1 / 0 / 0 / 0 / 0 / 0
+  jump_to_fixed_landing ended because: done x1
+  shoot_the_lock ended because: done x1
+  jump_onto_lift_A_when_low ended because: done x1
+  jump_to_ledge_at_top ended because: done x1
+  walk_onto_lift_B ended because: done x1
+  wait_for_lift_B_to_stop_then_step_left ended because: done x1
+  shoot_the_jammer ended because: done x1
+  step_on_the_switch ended because: done x1
+  jump_onto_lift_B_when_low ended because: done x1
+  jump_to_upper_at_top ended because: switched to jump_left_now x1
+  jump_left_now ended because: done x1
+  jump_onto_shuttle_1_when_near ended because: done x1
+  jump_to_catwalk_1_at_left_end ended because: done x1
+  cross_rail_1_when_it_turns_off ended because: done x1
+  jump_onto_shuttle_2_when_above ended because: done x1
+  jump_to_catwalk_2_at_right_end ended because: done x1
+  cross_rail_2_when_it_turns_off ended because: done x1
+  jump_to_top_landing ended because: done x1
+  walk_to_breaker ended because: done x1
+  walk_out_the_door_when_open ended because: done x1
+
+Executor steps (steps, ms a step median/p90/max, waits on the game a step mean/max; a tick is 33 ms at tick_hz 30, the loop ran 27.0 ticks/s):
+  jump_to_upper_at_top: 2602 steps, 5/7/29 ms, 1.0/1 waits
+  jump_left_now: 773 steps, 5/8/12 ms, 1.0/1 waits
+  (idle): 409 steps, 0/0/0 ms, 0.0/0 waits
+  cross_rail_2_when_it_turns_off: 301 steps, 5/8/13 ms, 1.0/1 waits
+  cross_rail_1_when_it_turns_off: 179 steps, 3/7/10 ms, 1.0/1 waits
+  walk_to_breaker: 159 steps, 6/9/17 ms, 1.0/1 waits
+  jump_onto_shuttle_2_when_above: 115 steps, 5/9/12 ms, 1.0/1 waits
+  jump_to_ledge_at_top: 73 steps, 2/3/5 ms, 1.0/1 waits
+  jump_to_catwalk_2_at_right_end: 61 steps, 3/5/9 ms, 1.0/1 waits
+  wait_for_lift_B_to_stop_then_step_left: 57 steps, 2/4/4 ms, 1.0/1 waits
+  jump_onto_shuttle_1_when_near: 49 steps, 4/9/12 ms, 1.0/1 waits
+  jump_to_catwalk_1_at_left_end: 49 steps, 3/4/9 ms, 1.0/1 waits
+  shoot_the_jammer: 43 steps, 2/3/4 ms, 1.0/1 waits
+  jump_onto_lift_A_when_low: 42 steps, 2/3/4 ms, 1.0/1 waits
+  jump_to_top_landing: 38 steps, 3/6/9 ms, 1.0/1 waits
+  jump_onto_lift_B_when_low: 31 steps, 2/3/4 ms, 1.0/1 waits
+  walk_onto_lift_B: 30 steps, 2/3/4 ms, 1.0/1 waits
+  jump_to_fixed_landing: 23 steps, 3/4/4 ms, 1.0/1 waits
+  shoot_the_lock: 20 steps, 3/4/4 ms, 1.0/1 waits
+  walk_out_the_door_when_open: 17 steps, 3/5/6 ms, 1.0/1 waits
+  step_on_the_switch: 3 steps, 2/3/3 ms, 1.0/1 waits
+
+Timeline (t: option, p, how it ended, seconds):
+  t=   6.8 jump_to_fixed_landing p=0.88 -> worked (done) 0.85s
+  t=   7.9 shoot_the_lock p=0.99 -> worked (done) 0.79s
+  t=   9.4 jump_onto_lift_A_when_low p=0.97 -> worked (done) 1.52s
+  t=  12.4 jump_to_ledge_at_top p=0.99 -> worked (done) 2.75s
+  t=  15.6 walk_onto_lift_B p=0.90 -> worked (done) 1.14s
+  t=  17.1 wait_for_lift_B_to_stop_then_step_left p=0.99 -> worked (done) 2.15s
+  t=  20.1 shoot_the_jammer p=0.98 -> worked (done) 1.55s
+  t=  21.7 step_on_the_switch p=0.01 -> worked (done) 0.11s
+  t=  22.4 jump_onto_lift_B_when_low p=0.97 -> worked (done) 1.13s
+  t=  24.2 jump_to_upper_at_top p=0.91 -> stopped (switched to jump_left_now) 3.75s
+  t=  27.9 jump_left_now p=0.69 -> worked (done) 0.63s
+  t=  28.6 jump_onto_shuttle_1_when_near p=0.82 -> worked (done) 0.72s
+  t=  29.6 jump_to_catwalk_1_at_left_end p=0.91 -> worked (done) 1.58s
+  t=  31.4 cross_rail_1_when_it_turns_off p=0.92 -> FAILED (done) 2.65s
+  t=  34.3 jump_onto_shuttle_2_when_above p=0.91 -> worked (done) 0.99s
+  t=  35.6 jump_to_catwalk_2_at_right_end p=0.93 -> worked (done) 2.06s
+  t=  37.9 cross_rail_2_when_it_turns_off p=0.96 -> FAILED (done) 2.62s
+  t=  40.7 jump_to_top_landing p=0.97 -> worked (done) 0.47s
+  t=  41.1 walk_to_breaker p=1.00 -> worked (done) 0.34s
+  t=  42.0 walk_out_the_door_when_open p=0.91 -> worked (done) 0.61s
+
+Jev: 278 answers, latency median 0.47s; actions {'started': 19, 'kept': 239, 'dropped': 16, 'kept_running': 3, 'switched': 1}
+First decision Jev saw (state): {"goal": "Freight-lift escape (side view, keyboard only): reset the upper breaker at the top of the shaft and walk out through the service door on the top landing. Break the lift lock (2 bolt hits), ride lift A, ride lift B until it stalls, shoot the jammer (3 hits), step on the floor switch, ride the repaired lift B to the upper landing, use the shuttles and catwalks (live rails: off -> warn -> live, standing on a live rail costs a life), climb to the top, touch the breaker, then stand in the opened door.", "situation": {"phase": "play", "lives": 5, "checkpoint": "start", "standing_on": "floor", "player_x": 60, "lock_hits_left": 2, "jammer_hits_left": 3, "lift_B_repaired": false, "breaker_reset": false, "door_open": 0, "spec_card_taken": false, "lives_lost_so_far": 0, "falls_so_far": 0, "situation": "on the bottom walkway; the fixed landing is up and to the right"}, "options": {"jump_to_fixed_landing": {"situation": "on the bottom walkway; the fixed landing is up and to the right"}, "jump_up_right_now": {"situation": "on the bottom walkway; the fixed landing is up and to the right"}}, "now_doing": null, "recent": [], "plan": {"done": [], "now": {"step": "break_lock", "what": "Break the lift lock with 2 render bolts from the fixed landing", "for_seconds": 2.8}, "next": ["Ride lift A up, cross the safe ledge, ride lift B until it stalls", "Shoot the jammer (3 hits) from the side landing", "Step on the floor switch to repair lift B", "Ride repaired lift B up and jump onto the u
+Its answer: {"jump_to_fixed_landing": 0.879, "jump_up_right_now": 0.121}
+Jev errors: 5 e.g. ReadTimeout: HTTPSConnectionPool(host='api.cloudflare.com', port=443): Read timed out. (read timeout=2.0)
+
+Situation over time (every ~5 s):
+  t=   0.1 {"phase": "reveal", "lives": 5, "checkpoint": "start", "standing_on": "floor", "player_x": 60, "lock_hits_left": 2, "jammer_hits_left": 3, "lift_B_repaired": false, "breaker_reset": false, "door_open": 0, "spec_card_taken": false, "lives_lost_so_far": 0, "falls_so_far": 0, "situation": "on the botto  [running] options=[] step=break_lock
+  t=   5.3 {"phase": "play", "lives": 5, "checkpoint": "start", "standing_on": "floor", "player_x": 60, "lock_hits_left": 2, "jammer_hits_left": 3, "lift_B_repaired": false, "breaker_reset": false, "door_open": 0, "spec_card_taken": false, "lives_lost_so_far": 0, "falls_so_far": 0, "situation": "on the bottom   [running] options=['jump_to_fixed_landing', 'jump_up_right_now'] step=break_lock
+  t=  10.5 {"phase": "play", "lives": 5, "checkpoint": "start", "standing_on": "in the air", "player_x": 333, "lock_hits_left": 0, "jammer_hits_left": 3, "lift_B_repaired": false, "breaker_reset": false, "door_open": 0, "spec_card_taken": false, "lives_lost_so_far": 0, "falls_so_far": 0, "situation": "airborne  [running] options=['keep_still_in_air'] step=ride_to_lift_b
+  t=  15.8 {"phase": "play", "lives": 5, "checkpoint": "start", "standing_on": "ledge", "player_x": 606, "lock_hits_left": 0, "jammer_hits_left": 3, "lift_B_repaired": false, "breaker_reset": false, "door_open": 0, "spec_card_taken": false, "lives_lost_so_far": 0, "falls_so_far": 0, "situation": "on the safe l  [running] options=['walk_onto_lift_B', 'wait_and_watch'] step=ride_to_lift_b
+  t=  21.1 {"phase": "play", "lives": 5, "checkpoint": "start", "standing_on": "side", "player_x": 640, "lock_hits_left": 0, "jammer_hits_left": 1, "lift_B_repaired": false, "breaker_reset": false, "door_open": 0, "spec_card_taken": false, "lives_lost_so_far": 0, "falls_so_far": 0, "situation": "on the side la  [running] options=['shoot_the_jammer', 'step_on_the_switch'] step=clear_jammer
+  t=  26.3 {"phase": "play", "lives": 5, "checkpoint": "repair", "standing_on": "liftB", "player_x": 845, "lock_hits_left": 0, "jammer_hits_left": 0, "lift_B_repaired": true, "breaker_reset": false, "door_open": 0, "spec_card_taken": false, "lives_lost_so_far": 0, "falls_so_far": 0, "situation": "riding repair  [running] options=['jump_to_upper_at_top', 'jump_left_now'] step=reach_upper
+  t=  31.6 {"phase": "play", "lives": 5, "checkpoint": "upper", "standing_on": "catwalk1", "player_x": 303, "lock_hits_left": 0, "jammer_hits_left": 0, "lift_B_repaired": true, "breaker_reset": false, "door_open": 0, "spec_card_taken": false, "lives_lost_so_far": 0, "falls_so_far": 0, "situation": "on catwalk   [running] options=['cross_rail_1_when_it_turns_off', 'cross_rail_1_now'] step=climb_to_top
+  t=  36.9 {"phase": "play", "lives": 5, "checkpoint": "upper", "standing_on": "shuttle2", "player_x": 329, "lock_hits_left": 0, "jammer_hits_left": 0, "lift_B_repaired": true, "breaker_reset": false, "door_open": 0, "spec_card_taken": false, "lives_lost_so_far": 0, "falls_so_far": 0, "situation": "riding shut  [running] options=['jump_to_catwalk_2_at_right_end', 'jump_right_now'] step=climb_to_top
+  t=  42.2 {"phase": "play", "lives": 5, "checkpoint": "upper", "standing_on": "top", "player_x": 843, "lock_hits_left": 0, "jammer_hits_left": 0, "lift_B_repaired": true, "breaker_reset": true, "door_open": 0.91, "spec_card_taken": false, "lives_lost_so_far": 0, "falls_so_far": 0, "situation": "on the top lan  [running] options=['walk_out_the_door_when_open', 'walk_to_door_now'] step=exit_door
+EXIT=0

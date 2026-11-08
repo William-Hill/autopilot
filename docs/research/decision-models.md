@@ -186,12 +186,15 @@ bridge (`?autopilot=1`, branch `feat/autopilot-bridge` in the game repo). The Cl
 fast mode off) wrote one harness with Jev. Then `autopilot run` replayed that same harness once with each provider,
 in a Chromium window with background throttling off. No call went through Aura.
 
-| Provider | Result | Play time to the credits | Decisions | Latency, median | Hits / lives lost | Errors |
+| Provider | Result | Play time to the credits | Decisions | Latency median / p90 / max | Hits / lives lost | Errors |
 |---|---|---|---|---|---|---|
-| `jev` | Reached the credits | 178.5 s | 187 | 0.14 s | 3 / 2 (Vendor Hall scope, Main Stage projectile) | 0 |
-| `clef` | Reached the credits | 178.4 s | 193 | 0.34 s | 2 / 2 (Main Stage projectile, boss) | 0 |
-| `openai` | Reached the credits | 186.0 s | 203 | 0.22 s | 2 / 2 (Main Stage projectile, boss) | 0 |
-| `anthropic` | Reached the credits | 197.4 s | 189 | 0.86 s | 2 / 2 (Main Stage projectile, boss) | 1 timeout |
+| `jev` | Reached the credits | 178.5 s | 187 | 0.15 / 0.33 / 0.92 s | 3 / 2 (Vendor Hall scope, Main Stage projectile) | 0 |
+| `clef` | Reached the credits | 178.4 s | 193 | 0.35 / 0.70 / 1.73 s | 2 / 2 (Main Stage projectile, boss) | 0 |
+| `openai` | Reached the credits | 186.0 s | 203 | 0.22 / 0.48 / 1.90 s | 2 / 2 (Main Stage projectile, boss) | 0 |
+| `anthropic` | Reached the credits | 197.4 s | 189 | 0.87 / 1.35 / 2.48 s | 2 / 2 (Main Stage projectile, boss) | 1 timeout |
+
+The evidence (the harness, one run summary for each provider, and `metrics.json`) is in
+[`playtest-2026-11-07/`](playtest-2026-11-07/README.md).
 
 What this shows:
 
