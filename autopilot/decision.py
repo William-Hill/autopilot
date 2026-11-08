@@ -16,6 +16,10 @@ Providers:
     jev        TypeSafe's Jev (runtime.jev_client): calibrated probabilities from the model itself. The default.
     anthropic  A Claude model through the Messages API with a JSON schema (structured outputs). The model states
                the probabilities itself: they are not calibrated like Jev's, and a decision takes longer.
+    clef       Cloudflare's Clef or Clef-flash on Workers AI: Jev's request shape, probabilities from the model.
+    openai     OpenAI's Decisions API (gpt-6-luna): predicate/choice/score questions, probabilities from the model.
+
+Aura's relay passes only TypeSafe's and Anthropic's traffic: clef and openai need the user's own keys.
 """
 
 import json
@@ -25,26 +29,37 @@ from dataclasses import dataclass, field
 
 PROVIDER_ENV = "AUTOPILOT_DECISION_PROVIDER"
 MODEL_ENV = "AUTOPILOT_DECISION_MODEL"
-PROVIDERS = ("jev", "anthropic")
+PROVIDERS = ("jev", "anthropic", "clef", "openai")
+THROUGH_AURA = ("jev", "anthropic")  # (the providers whose traffic Aura's relay passes)
 # A small, fast model: a decision must come back in about a second
 ANTHROPIC_MODEL = "claude-haiku-5-5"
 ANTHROPIC_TIMEOUT = 3.0  # seconds one call may take (the runtime forgets an answer after answer_timeout * 2.5)
 ANTHROPIC_MAX_TOKENS = 1024
-# The keys a provider needs when a run does not go through Aura (Aura's relay sets its own)
-KEYS = {"jev": ("TYPESAFE_API_KEY",), "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+CLEF_MODEL = "clef"  # (or clef-flash: faster, smaller)
+CLEF_URL = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/@cf/cloudflare/{model}"
+OPENAI_MODEL = "gpt-6-luna"
+OPENAI_URL = "https://api.openai.com/v1"
+HTTP_TIMEOUT = 2.0
+# The keys a provider needs: each group is one setting, and any name in a group gives it
+KEYS = {"jev": [("TYPESAFE_API_KEY",)], "anthropic": [("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")],
+        "clef": [("CLOUDFLARE_API_TOKEN",), ("CLOUDFLARE_ACCOUNT_ID",)], "openai": [("OPENAI_API_KEY",)]}
 
 
 def provider():
-    """The decision model's provider by AUTOPILOT_DECISION_PROVIDER: jev (the default) or anthropic."""
+    """The decision model's provider by AUTOPILOT_DECISION_PROVIDER: jev (the default), anthropic, clef or openai."""
     name = (os.environ.get(PROVIDER_ENV) or "").strip().lower() or "jev"
     if name not in PROVIDERS:
         raise ValueError(f"{PROVIDER_ENV}={name!r}: use one of {', '.join(PROVIDERS)}")
     return name
 
 
-def key_names(name=None):
-    """The environment variables that hold the key of the provider (by default, the one chosen)."""
-    return KEYS[name or provider()]
+def missing_keys(name=None, aura=False):
+    """The settings the provider (by default, the one chosen) still needs, by their first names. aura: the run goes
+    through Aura, whose relay gives Jev's and Anthropic's keys."""
+    name = name or provider()
+    if aura and name in THROUGH_AURA:
+        return []
+    return [group[0] for group in KEYS[name] if not any((os.environ.get(k) or "").strip() for k in group)]
 
 
 def client(warm=True):
@@ -52,6 +67,10 @@ def client(warm=True):
     name = provider()
     if name == "anthropic":
         return AnthropicDecider()
+    if name == "clef":
+        return ClefDecider()
+    if name == "openai":
+        return OpenAIDecider()
     from . import runtime
 
     # (two calls, not jev_client(warm=warm): tests stand in a jev_client that takes no argument)
@@ -230,3 +249,131 @@ class AnthropicDecider:
         return Answer(model=getattr(r, "model", None) or self.model, choices=choices, nouls=nouls, scores=scores,
                       usage=Usage(getattr(u, "input_tokens", 0) or 0, getattr(u, "output_tokens", 0) or 0),
                       raw=raw, seconds=time.monotonic() - start)
+
+
+# -- decision APIs over HTTP ------------------------------------------------------------------------------------------
+
+def _number(v, default=0.0):
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else default
+
+
+class HTTPDecider:
+    """A decision API reached with requests (one kept-open session)."""
+
+    name = "http"
+    answer_timeout = HTTP_TIMEOUT
+
+    def __init__(self, model=None, session=None):
+        self.model = model or (os.environ.get(MODEL_ENV) or "").strip() or self.default_model
+        if session is None:
+            import requests
+
+            session = requests.Session()
+        self.session = session
+
+    def post(self, url, headers, body, timeout=None):
+        r = self.session.post(url, headers=headers, json=body, timeout=timeout or self.answer_timeout)
+        try:
+            data = r.json()
+        except ValueError:
+            data = None
+        if r.status_code >= 400 or not isinstance(data, dict):
+            why = (data.get("errors") or data.get("error")) if isinstance(data, dict) else (r.text or "")[:200]
+            raise RuntimeError(f"{self.name}: HTTP {r.status_code}: {str(why)[:300]}")
+        return data
+
+
+class ClefDecider(HTTPDecider):
+    """Cloudflare's Clef (CLEF_MODEL; AUTOPILOT_DECISION_MODEL=clef-flash for the smaller one) on Workers AI. It takes
+    Jev's request (model, state, questions) and gives Jev's answers. Keys: CLOUDFLARE_API_TOKEN (a Workers AI token)
+    and CLOUDFLARE_ACCOUNT_ID."""
+
+    name = "clef"
+    default_model = CLEF_MODEL
+
+    def system_one(self, state, questions, timeout=None, retry=None, **_):
+        start = time.monotonic()
+        account = (os.environ.get("CLOUDFLARE_ACCOUNT_ID") or "").strip()
+        token = (os.environ.get("CLOUDFLARE_API_TOKEN") or "").strip()
+        body = {"model": self.model, "state": state,
+                "questions": {k: q.model_dump(mode="json", exclude_none=True) for k, q in questions.items()}}
+        data = self.post(CLEF_URL.format(account=account, model=self.model),
+                         {"Authorization": f"Bearer {token}"}, body, timeout)
+        out = data["result"] if isinstance(data.get("result"), dict) else data  # (Cloudflare's envelope, if any)
+        choices, nouls, scores = {}, {}, {}
+        for qid, a in (out.get("answers") or {}).items():
+            kind = a.get("type") or _kind(questions.get(qid))
+            if kind == "choice":
+                choices[qid] = ChoiceAnswer(choice=a.get("choice"), probabilities=dict(a.get("probabilities") or {}),
+                                            confidence=_number(a.get("confidence")))
+            elif kind == "noul":
+                nouls[qid] = NoulAnswer(noul=_number(a.get("noul"), 0.5))
+            elif kind == "score":
+                scores[qid] = ScoreAnswer(score=_number(a.get("score")),
+                                          probabilities=dict(a.get("probabilities") or {}),
+                                          confidence=_number(a.get("confidence")))
+        u = out.get("usage") or {}
+        return Answer(model=out.get("model") or self.model, choices=choices, nouls=nouls, scores=scores,
+                      usage=Usage(int(_number(u.get("input_tokens"))), int(_number(u.get("output_tokens")))),
+                      raw=data, seconds=time.monotonic() - start)
+
+
+class OpenAIDecider(HTTPDecider):
+    """OpenAI's Decisions API (POST /v1/decisions, OPENAI_MODEL). A Noul is asked as a predicate, a Choice's criteria
+    as choices, a Score's levels as levels; the answers come back in Jev's shape. Key: OPENAI_API_KEY (OPENAI_BASE_URL
+    changes the API root)."""
+
+    name = "openai"
+    default_model = OPENAI_MODEL
+
+    @staticmethod
+    def question(qid, q):
+        """A typesafe_sdk question as a Decisions API question."""
+        kind = _kind(q)
+        text = _text(q.instructions) or qid
+        if kind == "choice":
+            return {"type": "choice", "name": qid, "instructions": text,
+                    "choices": [{"value": n, "description": _text(d) or n} for n, d in q.criteria.items()]}
+        if kind == "noul":
+            crit = q.criteria or {}
+            extra = "".join(f" {k.capitalize()} means: {_text(crit.get(k))}." for k in ("true", "false") if crit.get(k))
+            return {"type": "predicate", "name": qid, "instructions": text + extra}
+        if kind == "score":
+            return {"type": "score", "name": qid, "instructions": text,
+                    "levels": [{"label": str(i), "description": _text(c) or str(i)} for i, c in enumerate(q.criteria)]}
+        raise ValueError(f"question {qid}: the openai decision model can't answer a {kind} question")
+
+    def system_one(self, state, questions, timeout=None, retry=None, **_):
+        start = time.monotonic()
+        root = ((os.environ.get("OPENAI_BASE_URL") or "").strip() or OPENAI_URL).rstrip("/")
+        token = (os.environ.get("OPENAI_API_KEY") or "").strip()
+        body = {"model": self.model,
+                "input": state if isinstance(state, str) else json.dumps(state, ensure_ascii=False),
+                "questions": [self.question(k, q) for k, q in questions.items()]}
+        data = self.post(f"{root}/decisions", {"Authorization": f"Bearer {token}"}, body, timeout)
+        choices, nouls, scores = {}, {}, {}
+        for a in data.get("answers") or []:
+            qid, kind = a.get("name"), a.get("type")
+            if kind == "refusal":
+                raise RuntimeError(f"the decision model refused to answer {qid}")
+            q = questions.get(qid)
+            if q is None:
+                continue
+            if kind == "predicate":
+                nouls[qid] = NoulAnswer(noul=_number(a.get("probability"), 0.5))
+            elif kind == "choice":
+                probs = {p.get("value"): _number(p.get("probability")) for p in a.get("probabilities") or []}
+                choices[qid] = ChoiceAnswer(choice=a.get("choice"), probabilities=probs,
+                                            confidence=_number(a.get("confidence")))
+            elif kind == "score":
+                probs = {}
+                for i, p in enumerate(a.get("probabilities") or []):
+                    # (a level by its label, which is its index here; else its value; else its place in the list)
+                    level = p.get("label", p.get("value", i))
+                    probs[str(level)] = _number(p.get("probability"))
+                scores[qid] = ScoreAnswer(score=_number(a.get("score")), probabilities=probs,
+                                          confidence=_number(a.get("confidence")))
+        u = data.get("usage") or {}
+        return Answer(model=data.get("model") or self.model, choices=choices, nouls=nouls, scores=scores,
+                      usage=Usage(int(_number(u.get("input_tokens"))), int(_number(u.get("output_tokens")))),
+                      raw=data, seconds=time.monotonic() - start)

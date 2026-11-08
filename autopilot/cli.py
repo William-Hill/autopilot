@@ -926,22 +926,26 @@ def cmd_run(link, args):
 
 
 def decision_key_missing():
-    """Why a run with the user's own keys can't start (its decision model has no key; a run through Aura needs none),
-    or None. Told to the user's own agent (`autopilot mcp`): the key goes in the file, never into its conversation."""
+    """Why a run with the user's own keys can't start (its decision model has no key; a run through Aura needs none
+    for Jev or Anthropic), or None. Told to the user's own agent (`autopilot mcp`): the key goes in the file, never
+    into its conversation."""
     try:
         name = decision.provider()
     except ValueError as e:
         return f"{e}. Correct the line in {account._user_env_path()}, then call start_run again."
-    if aura.enabled() or any((os.environ.get(k) or "").strip() for k in decision.key_names(name)):
+    missing = decision.missing_keys(name, aura=aura.enabled())
+    if not missing:
         return None
-    if name == "anthropic":
-        return ("Autopilot's decision model, the one that plays the game, is set to Anthropic "
-                f"({decision.PROVIDER_ENV}=anthropic) and needs a key. Add the line ANTHROPIC_API_KEY=<the key> to "
-                f"{account._user_env_path()}. Don't paste the key into this conversation. Then call start_run again.")
-    return ("Autopilot needs a key for its decision model, the one that plays the game (TypeSafe: "
-            f"https://typesafe.ai). Add the line TYPESAFE_API_KEY=<the key> to {account._user_env_path()}, or enter it "
-            "in the Autopilot tab's account setup in the editor (or choose Aura there). Don't paste the key into this "
-            "conversation. Then call start_run again.")
+    if name == "jev":
+        return ("Autopilot needs a key for its decision model, the one that plays the game (TypeSafe: "
+                f"https://typesafe.ai). Add the line TYPESAFE_API_KEY=<the key> to {account._user_env_path()}, or "
+                "enter it in the Autopilot tab's account setup in the editor (or choose Aura there). Don't paste the "
+                "key into this conversation. Then call start_run again.")
+    lines = ", ".join(f"{k}=<...>" for k in missing)
+    relay = "" if name in decision.THROUGH_AURA else " (Aura's relay doesn't carry this provider.)"
+    return (f"Autopilot's decision model, the one that plays the game, is set to {name} "
+            f"({decision.PROVIDER_ENV}={name}) and needs {', '.join(missing)}.{relay} Add the lines {lines} to "
+            f"{account._user_env_path()}. Don't paste a key into this conversation. Then call start_run again.")
 
 
 def external_run(params):
