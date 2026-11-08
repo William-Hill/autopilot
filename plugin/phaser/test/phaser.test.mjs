@@ -269,6 +269,48 @@ test("key events carry the legacy keyCode that Phaser's keyboard reads", async (
   assert.deepEqual(["Digit1", "Numpad2", "F5", "Nope"].map(legacyKeyCode), [49, 98, 116, 0]);
 });
 
+test("a HUD object keeps its screen place and size when the world camera zooms", async () => {
+  const fake = makeFakePhaser();
+  const cam = fake.level.cameras.main;
+  cam.zoom = 2;
+  cam.worldView = { x: 240, y: 135, width: 480, height: 270 }; // (zoom 2 about the middle, scroll 0)
+  Object.assign(fake.score, { x: 20, y: 20, width: 80, height: 20, originX: 0, originY: 0 });
+  const r = await fake.bridge.handle("pointer", { object: "/Game/HUD/score" });
+  // (its middle on the canvas: 60, 30 from the top left; the answer's y is from the bottom)
+  assert.deepEqual([r.x, r.y], [60, 510]);
+  const t = (await fake.bridge.handle("transforms", { objects: ["/Game/HUD/score"] })).objects["/Game/HUD/score"];
+  assert.deepEqual(t.extent, { X: 20, Y: 0, Z: 5 }); // (80 x 20 screen pixels are 40 x 10 world pixels at zoom 2)
+});
+
+test("a copied frame replaces the one before (a transparent pixel leaves no trail)", () => {
+  const modes = [];
+  const ctx = { set globalCompositeOperation(m) { modes.push(m); }, drawImage() {} };
+  const fake = makeFakePhaser({ options: { document: { createElement: () => ({ width: 0, height: 0, getContext: () => ctx }) } } });
+  fake.pump(1);
+  assert.deepEqual(modes, ["copy"]);
+});
+
+test("after the restart starts another scene, the view follows it", async () => {
+  const fake = makeFakePhaser({ options: { cameraScene: "Level" } });
+  const boss = { sys: { settings: { key: "Boss" } }, children: { list: [] }, cameras: { main: camera(5000, 0, 960, 540) }, scene: { key: "Boss" } };
+  fake.level.scene.start = (key) => {
+    fake.game.scene.getScenes = () => [boss]; // (Phaser stops Level and runs Boss)
+    fake.level.started = key;
+  };
+  const going = fake.bridge.handle("session", { action: "restart", map: "Boss" });
+  fake.pump(3);
+  await going;
+  assert.equal((await fake.bridge.handle("levels", {})).playing, "Boss");
+  assert.equal((await fake.bridge.handle("view", {})).camera.location.X, 5480);
+});
+
+test("all the properties of a game object read as a dictionary", async () => {
+  const fake = makeFakePhaser();
+  const all = await fake.bridge.handle("rc", { verb: "property", body: { objectPath: "/Game/Level/player" } });
+  assert.equal(all.x, 100);
+  assert.equal(all.name, "player");
+});
+
 test("arrow keys keep their Unreal names", () => {
   assert.equal(unrealName("ArrowRight"), "Right");
   assert.equal(unrealName("ArrowLeft"), "Left");

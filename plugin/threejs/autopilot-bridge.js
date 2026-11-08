@@ -1363,14 +1363,15 @@ export function createBridge(options = {}) {
     return cur;
   }
 
-  function plain(v, depth = 0) {
+  function plain(v, depth = 0, root = false) {
     if (v === null || v === undefined || typeof v === "number" || typeof v === "string" || typeof v === "boolean") return v ?? null;
     if (typeof v === "function") return "<function>";
     if (depth > 4) return "<...>";
     if (Array.isArray(v) || ArrayBuffer.isView(v)) return Array.from(v).slice(0, 200).map((x) => plain(x, depth + 1));
     if (v.isVector3) return { x: v.x, y: v.y, z: v.z };
-    if (v.isObject3D) return pathOf(v) || `<${v.type}>`;
-    const node = options.nodeOf?.(v);
+    // A scene object in a value reads as its path; the object a read asks for (root) gives its properties
+    if (!root && v.isObject3D) return pathOf(v) || `<${v.type}>`;
+    const node = root ? null : options.nodeOf?.(v);
     if (node) return pathOf(node) || `<${node.type}>`;
     if (v instanceof Map) return Object.fromEntries([...v].slice(0, 200).map(([k, x]) => [String(k), plain(x, depth + 1)]));
     if (v instanceof Set) return [...v].slice(0, 200).map((x) => plain(x, depth + 1));
@@ -1399,7 +1400,7 @@ export function createBridge(options = {}) {
         obj[name] = value;
         return {};
       }
-      if (!name) return plain(obj);
+      if (!name) return plain(obj, 0, true);
       let v = obj;
       for (const part of String(name).split(/[.:]/)) {
         if (v === null || v === undefined) break;

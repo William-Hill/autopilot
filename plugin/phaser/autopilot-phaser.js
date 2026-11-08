@@ -128,6 +128,7 @@ export function phaserBridgeOptions(game, options = {}) {
   let fresh = false; // the scene matches the game: true until the current task ends
   let camNode = null;
   let live = new Set(); // the game objects the last rebuild placed: a node of another is out of the scene
+  let started = null; // the key of the scene the default restart started last: the camera's scene while it runs
   let clock = 0; // game time (ms): the sum of Phaser's step deltas, so it stops while paused and never goes back
   game?.events?.on?.("step", (_time, delta) => (clock += Number(delta) || 0));
 
@@ -138,13 +139,15 @@ export function phaserBridgeOptions(game, options = {}) {
     if (typeof want === "function") return all.filter((s) => want(s));
     return all;
   };
+  // The scene whose main camera is the view: the scene the restart started, else cameraScene, while it is active;
+  // else the first scene read. (A stopped scene's camera shows nothing.)
   const worldScene = () => {
-    const read = scenesRead();
-    if (options.cameraScene) {
-      const s = game?.scene?.getScene?.(options.cameraScene) ?? read.find((x) => keyOf(x) === options.cameraScene);
+    const active = game?.scene?.getScenes ? game.scene.getScenes(true) : [];
+    for (const key of [started, options.cameraScene]) {
+      const s = key && active.find((x) => keyOf(x) === key);
       if (s) return s;
     }
-    return read[0] ?? null;
+    return scenesRead()[0] ?? null;
   };
   const mainCamera = () => worldScene()?.cameras?.main ?? null;
 
@@ -165,8 +168,7 @@ export function phaserBridgeOptions(game, options = {}) {
     queueMicrotask(() => (fresh = false));
     const cam = mainCamera();
     camNode = cam ? cameraOf(cam) : null;
-    const camWorld = cam?.worldView ?? { x: 0, y: 0 };
-    const zoom = Number(cam?.zoom ?? 1) || 1;
+    const main = viewOf(cam);
     const camScene = worldScene();
     root.children = [];
     live = new Set();
@@ -177,37 +179,24 @@ export function phaserBridgeOptions(game, options = {}) {
       sn.visible = scene.sys?.settings?.visible !== false;
       sn.children = [];
       root.children.push(sn);
-      const own = scene.cameras?.main;
+      const own = viewOf(scene.cameras?.main);
       const list = scene.children?.list ?? scene.sys?.displayList?.list ?? [];
-      // A screen point (the canvas' pixels) as the world point under it in the camera scene
-      const toWorld = (sx, sy) => [Number(camWorld.x) + sx / zoom, Number(camWorld.y) + sy / zoom];
-      // How far a top-level object moves to show in the world where it shows on screen: null for a world object. A
-      // screen-space object (scroll factor 0, or in another scene than the camera's) moves to the world point under
-      // its screen point (a translation: the cameras' zoom and rotation left out). A Container's objects move with it,
-      // as Phaser draws them with the Container's scroll factor.
-      const shiftOf = (go, m) => {
+      // The transform that puts a top-level object in the world where it shows on screen: null for a world object. A
+      // screen-space object (scroll factor 0, or in another scene than the camera's) is drawn by its own scene's
+      // camera; the transform takes it to the world point under it in the camera scene, sized to match. A
+      // Container's objects take the Container's transform, as Phaser draws them with its scroll factor. (The
+      // cameras' rotation is left out.)
+      const shiftOf = (go) => {
         const sf0 = Number(go.scrollFactorX ?? 1) === 0 && Number(go.scrollFactorY ?? 1) === 0;
         if (!sf0 && scene === camScene) return null;
-        let sx = m.tx;
-        let sy = m.ty;
-        if (!sf0 && own?.worldView) {
-          const z = Number(own.zoom ?? 1) || 1;
-          sx = (m.tx - Number(own.worldView.x)) * z;
-          sy = (m.ty - Number(own.worldView.y)) * z;
-        }
-        const [wx, wy] = toWorld(sx, sy);
-        return [wx - m.tx, wy - m.ty];
+        return screenToWorld(own, sf0 ? 0 : 1, main);
       };
       const add = (parent, go, inherited) => {
         if (!go || (options.include && !options.include(go))) return;
         const n = nodeFor(go, () => ({ children: [], userData: {}, gameObject: go, rcTarget: go, matrixWorld: { elements: IDENTITY } }));
-        const m = affineOf(go);
-        const shift = inherited === undefined ? shiftOf(go, m) : inherited;
+        const shift = inherited === undefined ? shiftOf(go) : inherited;
         if (shift && options.hud === false) return;
-        if (shift) {
-          m.tx += shift[0];
-          m.ty += shift[1];
-        }
+        const m = shift ? scaled(affineOf(go), shift) : affineOf(go);
         live.add(go);
         n.name = String(go.name ?? "");
         n.type = String(go.type || go.constructor?.name || "GameObject");
@@ -252,7 +241,10 @@ export function phaserBridgeOptions(game, options = {}) {
       mirror ??= doc.createElement("canvas");
       if (mirror.width !== c.width) mirror.width = c.width;
       if (mirror.height !== c.height) mirror.height = c.height;
-      mirror.getContext("2d")?.drawImage(c, 0, 0);
+      const ctx = mirror.getContext("2d");
+      if (!ctx) return;
+      ctx.globalCompositeOperation = "copy"; // (a transparent pixel replaces the old frame's, so no trails)
+      ctx.drawImage(c, 0, 0);
     });
   }
 
@@ -265,8 +257,10 @@ export function phaserBridgeOptions(game, options = {}) {
     hooks.restart = ({ map } = {}) => {
       const s = worldScene();
       if (!s?.scene) throw new Error("no scene to restart");
-      if (map) s.scene.start(map);
-      else s.scene.restart();
+      if (map) {
+        s.scene.start(map);
+        started = String(map);
+      } else s.scene.restart();
       return afterFrames(2);
     };
   }
@@ -347,6 +341,30 @@ export function phaserBridgeOptions(game, options = {}) {
     nodeOf,
     hooks,
   };
+}
+
+// What a Phaser camera does, from its world view: zoom z about the view's middle C (screen pixels), after its scroll S.
+// A world point p with scroll factor f shows at screen = z (p - f S) + C (1 - z).
+function viewOf(cam) {
+  const wv = cam?.worldView ?? { x: 0, y: 0, width: Number(cam?.width ?? 0), height: Number(cam?.height ?? 0) };
+  const z = Number(cam?.zoom ?? 1) || 1;
+  const C = [Number(cam?.width ?? wv.width * z) / 2, Number(cam?.height ?? wv.height * z) / 2];
+  // (worldView starts at S + C (1 - 1/z): the world point at the screen's top left)
+  const S = [Number(wv.x) - C[0] * (1 - 1 / z), Number(wv.y) - C[1] * (1 - 1 / z)];
+  return { z, C, S };
+}
+
+// The transform {k, ox, oy} that takes a point drawn by camera `own` (scroll factor f) to the world point under it in
+// camera `main`: world = k p + o, k = z/Z, o = S - k f s + C (Z - z) / Z (both cameras on the whole canvas).
+export function screenToWorld(own, f, main) {
+  const k = own.z / main.z;
+  const o = (i) => main.S[i] - k * f * own.S[i] + (main.C[i] * (main.z - own.z)) / main.z;
+  return { k, ox: o(0), oy: o(1) };
+}
+
+// An affine after the transform {k, ox, oy}.
+function scaled(m, t) {
+  return { a: t.k * m.a, b: t.k * m.b, c: t.k * m.c, d: t.k * m.d, tx: t.k * m.tx + t.ox, ty: t.k * m.ty + t.oy };
 }
 
 function keyOf(scene) {
