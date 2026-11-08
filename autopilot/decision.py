@@ -244,7 +244,9 @@ class AnthropicDecider:
 
             # (idle connections kept as long as Jev's: a decision after an idle stretch needs no new connection)
             http = anthropic.DefaultHttpxClient(limits=httpx2.Limits(keepalive_expiry=KEEPALIVE))
-            sdk = anthropic.Anthropic(timeout=ANTHROPIC_TIMEOUT, max_retries=1, http_client=http)
+            # (no retries: the runtime asks again on its next tick, and a retry that waits for a 429's retry-after
+            # would hold one of its few worker threads long after the answer is forgotten)
+            sdk = anthropic.Anthropic(timeout=ANTHROPIC_TIMEOUT, max_retries=0, http_client=http)
         self.sdk = sdk
 
     def request(self, state, questions):
