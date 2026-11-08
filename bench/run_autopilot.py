@@ -68,7 +68,8 @@ def run_one(item, args, root):
     started = time.time()
     # (the brain's own budget follows --minutes too: without it a run believes it has the default 30 whatever the
     # bench waits for)
-    env = dict(os.environ, PYTHONIOENCODING="utf-8", AUTOPILOT_MEMORY=memory,
+    # (AUTOPILOT_CONFIRM_COST=0: nobody answers the brain's question before a run; AUTOPILOT_MAX_USD still applies)
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", AUTOPILOT_MEMORY=memory, AUTOPILOT_CONFIRM_COST="0",
                AUTOPILOT_TIMEOUT=str(int(args.minutes * 60)))
     settings = os.path.join(work, "settings")  # (bridge.brain_file's base: the game keeps the real one, for its DDC)
     os.makedirs(settings)

@@ -114,17 +114,32 @@ The estimate uses these inputs:
 2. The reading model: `AUTOPILOT_HELPER_MODEL`, else the provider's cheaper model.
 3. The decision model: `AUTOPILOT_JEV_MODEL`, else Jev.
 4. The planned episodes (`--episodes`) or minutes of play (`--minutes`).
-5. The earlier runs of the same project in `memory/<project>/runs/`. With no earlier runs, the estimate uses default amounts, and the range is wider.
+5. The earlier runs of the same project in `memory/<project>/runs/`. Each run writes its Jev decisions and its seconds of play per episode into its `report.json` (`episode_stats`). For an older run, the estimate reads its traces. With no earlier runs, the estimate uses default amounts, and the range is wider.
 
 The prices are in `autopilot/prices.json`. Each price table has a source URL and a date. Update a price there when a provider changes it. A model with no price is named in the output.
 
-Every real run also prints its estimate at the start. To stop a run that can cost too much, set a limit:
+Before every run, `autopilot play` prints the estimate and asks:
+
+```text
+Start the run? [y/N]
+```
+
+Only `y` or `yes` starts the run. The run does not start in these conditions:
+
+- No answer in 120 seconds.
+- Ctrl-C, or the end of input.
+- The Stop button in the plugin, or the game disconnects.
+- No terminal. The output tells you how to skip the question.
+
+To skip the question for unattended runs, give `--yes`, or set `AUTOPILOT_CONFIRM_COST=0`. `bench/run_autopilot.py` sets it for each run.
+
+To stop a run that can cost too much, set a limit:
 
 ```bash
 export AUTOPILOT_MAX_USD=5
 ```
 
-You can also give `--max-usd 5` to `autopilot play`. When the high estimate is above the limit, `autopilot play` asks on the terminal before it starts the run. With no answer in 120 seconds, or on Ctrl-C, the run does not start. A run started from the plugin, or a run with no terminal, does not start, and its report gives the reason.
+You can also give `--max-usd 5` to `autopilot play`. When the high estimate is above the limit, the question has one more line that says so. With `--yes`, `AUTOPILOT_CONFIRM_COST=0`, or a run that the plugin starts, nobody is asked: a run above the limit does not start, and its report gives the reason.
 
 ## Uninstallation
 

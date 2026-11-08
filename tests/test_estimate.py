@@ -22,7 +22,7 @@ REFERENCE = {
 @pytest.fixture(autouse=True)
 def clean_env(monkeypatch):
     for k in ("AUTOPILOT_AGENT", "AUTOPILOT_MODEL", "AUTOPILOT_FAST", "AUTOPILOT_HELPER_MODEL", "AUTOPILOT_JEV_MODEL",
-              "AUTOPILOT_OPENCODE_PROVIDER", "AUTOPILOT_MAX_USD"):
+              "AUTOPILOT_OPENCODE_PROVIDER", "AUTOPILOT_MAX_USD", "AUTOPILOT_CONFIRM_COST"):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -171,12 +171,56 @@ def test_a_run_above_the_limit_is_refused_unless_the_user_allows_it(tmp_path, mo
     monkeypatch.setattr(cli.codexmod, "MEMORY", str(tmp_path))
     monkeypatch.setattr(cli.aura, "enabled", lambda: False)
     link = Link()
-    assert cli.cost_check(link) is None  # (no limit)
+    assert cli.cost_check(link) is None  # (no limit, nobody to ask: the plugin's runs)
     assert link.said and link.said[0].startswith("Cost estimate: $")
     monkeypatch.setenv("AUTOPILOT_MAX_USD", "0.01")
     assert "AUTOPILOT_MAX_USD" in cli.cost_check(link)
-    assert cli.cost_check(link, confirm=lambda words: True) is None
-    assert "AUTOPILOT_MAX_USD" in cli.cost_check(link, confirm=lambda words: False)
+    assert cli.cost_check(link, confirm=lambda warning: True) is None
+    assert "AUTOPILOT_MAX_USD" in cli.cost_check(link, confirm=lambda warning: False)
+
+
+def test_every_play_run_asks_after_its_estimate_and_the_limit_is_a_warning_line(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.codexmod, "MEMORY", str(tmp_path))
+    monkeypatch.setattr(cli.aura, "enabled", lambda: False)
+    asked = []
+
+    def answer(yes):
+        return lambda warning: asked.append(warning) or yes
+
+    assert cli.cost_check(Link(), confirm=answer(True)) is None
+    assert cli.cost_check(Link(), confirm=answer(False)) == cli.NOT_CONFIRMED
+    assert asked == [None, None]  # (under no limit: the question, with no warning)
+    monkeypatch.setenv("AUTOPILOT_MAX_USD", "0.01")
+    assert cli.cost_check(Link(), confirm=answer(True)) is None
+    assert "AUTOPILOT_MAX_USD" in asked[-1]
+
+
+def test_yes_and_the_environment_skip_the_question_but_not_the_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.codexmod, "MEMORY", str(tmp_path))
+    monkeypatch.setattr(cli.aura, "enabled", lambda: False)
+    never = lambda warning: pytest.fail("nobody is asked")  # noqa: E731
+    for off in ("0", "no", "OFF", "false"):
+        monkeypatch.setenv("AUTOPILOT_CONFIRM_COST", off)
+        assert cli.cost_check(Link(), confirm=never) is None
+    monkeypatch.setenv("AUTOPILOT_MAX_USD", "0.01")
+    assert "AUTOPILOT_MAX_USD" in cli.cost_check(Link(), confirm=never)
+    monkeypatch.setenv("AUTOPILOT_CONFIRM_COST", "1")  # (set, so the test's end takes back what main() sets)
+    assert cli.confirm_wanted()
+    monkeypatch.setattr(cli, "load_user_keys", lambda: None)
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+    for name in ("contain", "keep_responsive"):
+        monkeypatch.setattr(cli.processes, name, lambda: None)
+    for name in ("fix_at_start", "follow_preferences"):
+        monkeypatch.setattr(cli.account, name, lambda: None)
+    monkeypatch.setattr(cli, "cmd_estimate", lambda args: 0)
+    assert cli.main(["play", "a prompt", "--estimate", "--yes"]) == 0
+    assert not cli.confirm_wanted()
+
+
+def test_the_bench_brain_starts_without_the_question():
+    """bench/run_autopilot.py runs `autopilot play` with nobody at its terminal: it must skip the question."""
+    with open(os.path.join(os.path.dirname(__file__), "..", "bench", "run_autopilot.py"), encoding="utf-8") as f:
+        assert 'AUTOPILOT_CONFIRM_COST="0"' in f.read()
 
 
 def test_a_failed_estimate_never_stops_a_run(monkeypatch):
@@ -263,6 +307,28 @@ def terminal(monkeypatch):
     monkeypatch.setattr(cli.sys, "stdin", types.SimpleNamespace(isatty=lambda: True))
 
 
+def test_the_plugin_s_stop_ends_the_question_with_no(terminal):
+    import threading
+
+    never = threading.Event()
+    stops = iter([False, False, True])
+    assert cli.ask_on_terminal(None, read=lambda q: never.wait(5) or "y", stopped=lambda: next(stops)) is False
+    frames = [{"type": "steer"}, {"type": "stop"}]
+    link = types.SimpleNamespace(next_message=lambda timeout=None: frames.pop(0) if frames else None)
+    stopped = cli.stop_pressed(link)
+    assert stopped() is True and not frames
+    assert stopped() is False
+    gone = types.SimpleNamespace(next_message=lambda timeout=None: {"type": "closed"})
+    assert cli.stop_pressed(gone)() is True  # (the game disconnected: nobody to play for)
+
+
+def test_the_question_names_the_limit_only_above_it(terminal):
+    seen = []
+    cli.ask_on_terminal(None, read=lambda q: seen.append(q) or "n")
+    cli.ask_on_terminal("The run can cost up to $9.00", read=lambda q: seen.append(q) or "n")
+    assert seen == ["Start the run? [y/N] ", "The run can cost up to $9.00\nStart the run? [y/N] "]
+
+
 def test_the_confirm_prompt_starts_the_run_only_on_yes(terminal):
     assert cli.ask_on_terminal("over", read=lambda q: "y") is True
     assert cli.ask_on_terminal("over", read=lambda q: "YES ") is True
@@ -284,9 +350,25 @@ def test_the_confirm_prompt_says_no_on_ctrl_c_end_of_input_and_timeout(terminal)
     assert cli.ask_on_terminal("over", seconds=0.05, read=lambda q: never.wait(5) or "y") is False
 
 
-def test_the_confirm_prompt_says_no_without_a_terminal(monkeypatch):
+def test_the_confirm_prompt_says_no_without_a_terminal(monkeypatch, capsys):
     monkeypatch.setattr(cli.sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
     assert cli.ask_on_terminal("over", read=lambda q: pytest.fail("no terminal to ask on")) is False
+    assert "--yes" in capsys.readouterr().out
+
+
+def test_history_reads_the_report_s_episode_stats_before_the_traces(tmp_path):
+    run = write_run(tmp_path, dict(REFERENCE, episode_stats=[{"decisions": 50, "play_seconds": 30.0},
+                                                             {"decisions": 70, "play_seconds": 50.0}]))
+    for trace in run.glob("trace*.jsonl"):
+        trace.unlink()  # (a new run: the report has them, the traces are not read)
+    r = est.history(str(tmp_path), est.prices())[0]
+    assert r["decisions"] == pytest.approx(60) and r["play_seconds"] == pytest.approx(40)
+
+
+def test_history_reads_the_traces_of_an_older_run_or_damaged_stats(tmp_path):
+    write_run(tmp_path, dict(REFERENCE, episode_stats=[{"decisions": "many"}]))
+    r = est.history(str(tmp_path), est.prices())[0]
+    assert r["decisions"] == pytest.approx(93.5)  # (from the traces, as test_history_reads_reports_and_traces)
 
 
 def test_a_damaged_price_table_ends_the_estimate_command_with_an_error(tmp_path, monkeypatch, capsys):
@@ -319,7 +401,7 @@ def test_a_trace_cut_off_mid_line_still_counts_its_whole_lines(tmp_path):
     run = write_run(tmp_path, REFERENCE, decisions=(10,), seconds=(20.0,))
     with open(run / "trace1.jsonl", "a") as f:
         f.write('\n{"kind": "decision", "t": 2')
-    assert est._trace_numbers(str(run)) == [(10, 20.0)]
+    assert est.trace_numbers(str(run)) == [(10, 20.0)]
 
 
 # -- each way to pay, with and without history, and a model with no price --------------------------------------------

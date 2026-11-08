@@ -1281,6 +1281,22 @@ def test_probe_writes_are_research_in_the_report(game, tmp_path, monkeypatch):
     assert report["level_modified"] and report["research_modified"] == []
 
 
+def test_the_report_keeps_jev_s_decisions_and_the_seconds_of_play_per_episode(game, tmp_path, monkeypatch):
+    """report.json's episode_stats: what the next cost estimate reads (autopilot/estimate.py), not the traces."""
+    from autopilot import codex
+    from autopilot.agents import session
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
+    s = session.Session(game, "fake", "Open the crate", "r1")
+    os.makedirs(s.run_dir, exist_ok=True)
+    with open(os.path.join(s.run_dir, "trace1.jsonl"), "w", encoding="utf-8") as f:
+        f.write("\n".join(json.dumps(x) for x in ({"kind": "start", "t": 2.0}, {"kind": "decision", "t": 3.0},
+                                                    {"kind": "decision", "t": 9.5}, {"kind": "end", "t": 12.0})))
+    session.finish(s, time.time(), None, "")
+    with open(os.path.join(s.run_dir, "report.json"), encoding="utf-8") as f:
+        assert json.load(f)["episode_stats"] == [{"decisions": 2, "play_seconds": 10.0}]
+
+
 def test_system_prompt_fills_the_research_and_agents_parts(game):
     from autopilot.agents import session
 

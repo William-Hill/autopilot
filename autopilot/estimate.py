@@ -1,8 +1,8 @@
 """What a run is expected to cost, before it starts: `autopilot estimate` and `autopilot play --estimate`.
 
     prices()        the price tables (prices.json beside this file: one place to update, with a source and a date).
-    history()       the earlier runs of a project (memory/<project>/runs/<run>/report.json and its traces), each
-                    turned into per-episode amounts that do not depend on the model's price.
+    history()       the earlier runs of a project (memory/<project>/runs/<run>/report.json, and the traces of older
+                    runs), each turned into per-episode amounts that do not depend on the model's price.
     estimate()      a range (low, high) for each part of a run: the agent's language model, the reading model
                     (llm.HELPER), the decision model (Jev through TypeSafe), and the total for each way to pay.
     over_limit()    whether a run's high estimate is above AUTOPILOT_MAX_USD.
@@ -101,9 +101,10 @@ def decision_model():
 
 # -- earlier runs ------------------------------------------------------------------------------------------------------
 
-def _trace_numbers(run_dir):
+def trace_numbers(run_dir):
     """(decisions, seconds of play) per episode, from the run's trace<n>.jsonl files. The seconds of play are the last
-    game time less the first, as telemetry.episode_spans has them (read here in the same pass as the decisions)."""
+    game time less the first, as telemetry.episode_spans has them (read here in the same pass as the decisions). A run
+    writes these into its report.json as episode_stats when it ends (agents/session.finish)."""
     out = []
     for path in sorted(glob.glob(os.path.join(run_dir, "trace*.jsonl"))):
         decisions, first_t, last_t = 0, None, 0.0
@@ -125,6 +126,22 @@ def _trace_numbers(run_dir):
     return out
 
 
+def episode_stats(run_dir):
+    """The episode_stats that a run's report.json keeps: [{decisions, play_seconds}] per episode."""
+    return [{"decisions": d, "play_seconds": round(s, 1)} for d, s in trace_numbers(run_dir)]
+
+
+def _report_numbers(r, run_dir):
+    """(decisions, seconds of play) per episode: from the report's episode_stats, else (an older run) from its
+    traces."""
+    stats = r.get("episode_stats")
+    if isinstance(stats, list) and stats and all(
+            isinstance(x, dict) and isinstance(x.get("decisions"), (int, float))
+            and isinstance(x.get("play_seconds"), (int, float)) for x in stats):
+        return [(x["decisions"], x["play_seconds"]) for x in stats]
+    return trace_numbers(run_dir)
+
+
 def history(project_dir, table):
     """The project's newest earlier runs that have cost data, newest first: one dict per run with the agent, episodes,
     and per-episode agent units, reading units, decisions and seconds of play (None where unknown)."""
@@ -141,7 +158,7 @@ def history(project_dir, table):
         if not isinstance(cost, (int, float)) or not isinstance(episodes, int) or episodes < 1:
             continue  # (no cost data, or a report another version wrote differently)
         price = input_price(r.get("model"), table, bool(r.get("fast")))
-        traces = _trace_numbers(os.path.dirname(report))
+        traces = _report_numbers(r, os.path.dirname(report))
         usage = r.get("reading_usage")
         reading = usage_units(usage, table) if isinstance(usage, dict) else None  # (none, or damaged: unknown)
         runs.append({
