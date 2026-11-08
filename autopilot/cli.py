@@ -647,11 +647,15 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
         return asked, play_seconds
 
     try:
+        decision.check()  # (a wrong decision provider or model setting ends the run here, with the reason)
         if aura.enabled():
             # (a kind not known yet is told to Aura as a goal: Aura bills every kind the same)
             run = start_aura_run(link, kind or "goal", (link.hello or {}).get("project") or "game", path,
                                  trace=trace, model=aura_model, disable_premium_models=disable_premium_models)
             account.note_credits(None)  # (Aura started it: the team has credits)
+    except decision.ProviderError as e:
+        report = {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved",
+                  "summary": f"{e}. Correct the line in {account._user_env_path()}.", "evidence": []}
     except aura.Refused as e:
         report = {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved",
                   "summary": e.message, "evidence": []}
@@ -909,8 +913,8 @@ def decision_key_missing():
     for Jev or Anthropic), or None. Told to the user's own agent (`autopilot mcp`): the key goes in the file, never
     into its conversation."""
     try:
-        name = decision.provider()
-    except ValueError as e:
+        name = decision.check()
+    except decision.ProviderError as e:
         return f"{e}. Correct the line in {account._user_env_path()}, then call start_run again."
     missing = decision.missing_keys(name, aura=aura.enabled())
     if not missing:
@@ -921,10 +925,10 @@ def decision_key_missing():
                 "enter it in the Autopilot tab's account setup in the editor (or choose Aura there). Don't paste the "
                 "key into this conversation. Then call start_run again.")
     lines = ", ".join(f"{k}=<...>" for k in missing)
-    relay = "" if name in decision.THROUGH_AURA else " (Aura's relay doesn't carry this provider.)"
+    relay = "" if name in decision.THROUGH_AURA else " (Aura's relay does not carry this provider.)"
     return (f"Autopilot's decision model, the one that plays the game, is set to {name} "
             f"({decision.PROVIDER_ENV}={name}) and needs {', '.join(missing)}.{relay} Add the lines {lines} to "
-            f"{account._user_env_path()}. Don't paste a key into this conversation. Then call start_run again.")
+            f"{account._user_env_path()}. Do not paste a key into this conversation. Then call start_run again.")
 
 
 def external_run(params):
