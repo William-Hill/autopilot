@@ -24,6 +24,7 @@ PRICES = os.path.join(HERE, "prices.json")
 TOKEN_FIELDS = ("input", "output", "cache_read", "cache_write")
 # The agent's provider when AUTOPILOT_AGENT names no other (agents/__init__.py: claude is Anthropic, codex OpenAI)
 AGENT_PROVIDERS = {"claude": "anthropic", "codex": "openai"}
+HISTORY_RUNS = 10  # the newest earlier runs the estimate reads (a run's traces can be large)
 
 
 def prices(path=PRICES):
@@ -128,6 +129,8 @@ def history(project_dir, table):
     mode, episodes, and per-episode agent units, reading units, decisions and seconds of play (None where unknown)."""
     runs = []
     for report in sorted(glob.glob(os.path.join(project_dir, "runs", "*", "report.json")), reverse=True):
+        if len(runs) == HISTORY_RUNS:
+            break
         try:
             with open(report, encoding="utf-8") as f:
                 r = json.load(f)
@@ -193,16 +196,19 @@ def estimate(project_dir=None, agent=None, model=None, fast=None, episodes=None,
     helper = helper_model(provider, model)
     decision_provider, decision = decision_model()
     runs = history(project_dir, table) if project_dir and os.path.isdir(project_dir) else []
-    same = [r for r in runs if r["agent"] == agent] or runs  # (the same agent's runs, when there are some)
+    # (the same agent's runs, when there are some: an agent's turns differ from another's; else every run)
+    same = [r for r in runs if r["agent"] == agent]
+    other_agents = bool(runs) and not same
+    runs = same or runs
 
-    seconds = spread([r["play_seconds"] for r in same], [priors["play_seconds_per_episode"]] * 2)
+    seconds = spread([r["play_seconds"] for r in runs], [priors["play_seconds_per_episode"]] * 2)
     if episodes:
         planned, basis = int(episodes), "asked"
     elif minutes:
         per_episode = statistics.mean(seconds)
         planned, basis = max(1, math.ceil(float(minutes) * 60 / per_episode)), f"{minutes:g} minutes of play"
-    elif same:
-        planned, basis = max(1, round(statistics.median(r["episodes"] for r in same))), "earlier runs"
+    elif runs:
+        planned, basis = max(1, round(statistics.median(r["episodes"] for r in runs))), "earlier runs"
     else:
         planned, basis = priors["episodes"], "default"
 
@@ -213,7 +219,7 @@ def estimate(project_dir=None, agent=None, model=None, fast=None, episodes=None,
         missing.append(model)
         parts["agent"] = None
     else:
-        units = spread([r["agent_units"] for r in same], priors["agent_units_per_episode"])
+        units = spread([r["agent_units"] for r in runs], priors["agent_units_per_episode"])
         parts["agent"] = tuple(u * price * planned for u in units)
     helper_price = input_price(helper, table)
     if helper_price is None:
@@ -235,7 +241,8 @@ def estimate(project_dir=None, agent=None, model=None, fast=None, episodes=None,
     return {
         "agent": agent, "provider": provider, "model": model, "fast": fast, "helper": helper,
         "decision_provider": decision_provider, "decision_model": decision,
-        "episodes": planned, "episodes_basis": basis, "runs": len(same), "project_dir": project_dir,
+        "episodes": planned, "episodes_basis": basis, "runs": len(runs),
+        "other_agents": other_agents, "project_dir": project_dir,
         "parts": parts, "own_keys": own, "aura": tuple(x * factor for x in own) if own else None,
         "missing": missing, "prices_checked": table.get("updated"),
     }
@@ -249,12 +256,14 @@ def usd(pair):
     return "no price" if pair is None else f"{money(pair[0])} to {money(pair[1])}"
 
 
-def text(e):
-    """The estimate as the user reads it."""
+def text(e, before_run=False):
+    """The estimate as the user reads it. before_run: printed as a real run starts (else the run does not start)."""
     project = os.path.basename(e["project_dir"]) if e["project_dir"] else None
     history_words = (f"{e['runs']} earlier run(s) with cost data" if e["runs"] else "no earlier runs with cost data")
+    if e.get("other_agents"):
+        history_words += ", all of other agents"
     lines = [
-        "Cost estimate for one run (the run does not start)",
+        "Cost estimate for this run" if before_run else "Cost estimate for one run (the run does not start)",
         f"  Project: {project} ({history_words})" if project else "  Project: not named (default amounts)",
         f"  Agent: {e['agent']}, model {e['model']}, fast mode {'on' if e['fast'] else 'off'}",
         f"  Reading model: {e['helper']}",

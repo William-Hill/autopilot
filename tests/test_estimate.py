@@ -193,3 +193,59 @@ def test_run_prompt_reports_a_refused_run_without_playing(tmp_path, monkeypatch)
     result = next(f["result"] for f in sent if f.get("type") == "result")
     assert "AUTOPILOT_MAX_USD" in json.dumps(result)
     assert os.environ["AUTOPILOT_MAX_USD"] == "0.01"
+
+
+# -- review fixes --------------------------------------------------------------------------------------------------
+
+
+def test_the_text_before_a_real_run_does_not_say_the_run_does_not_start():
+    e = est.estimate(None, agent="claude", model="claude-opus-5-5")
+    assert est.text(e).startswith("Cost estimate for one run (the run does not start)")
+    assert est.text(e, before_run=True).startswith("Cost estimate for this run\n")
+
+
+def test_history_reads_only_the_newest_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr(est, "HISTORY_RUNS", 2)
+    for n in range(4):
+        write_run(tmp_path, dict(REFERENCE, run=f"2026110{n}-000000"))
+    assert [r["run"] for r in est.history(str(tmp_path), est.prices())] == ["20261103-000000", "20261102-000000"]
+
+
+def test_runs_of_other_agents_are_used_and_named(tmp_path):
+    write_run(tmp_path, REFERENCE)  # (a claude run)
+    e = est.estimate(str(tmp_path), agent="opencode", model="claude-opus-5-5", fast=True)
+    assert e["runs"] == 1 and e["other_agents"]
+    assert "1 earlier run(s) with cost data, all of other agents" in est.text(e)
+    assert not est.estimate(str(tmp_path), agent="claude")["other_agents"]
+
+
+def run_prompt_estimates(monkeypatch, tmp_path, **kwargs):
+    """The cost_check arguments run_prompt uses (None when it does not call it); the run itself never starts."""
+    monkeypatch.setattr(cli.codexmod, "MEMORY", str(tmp_path))
+    monkeypatch.setattr(cli, "prepare", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no game")))
+    seen = []
+    monkeypatch.setattr(cli, "cost_check", lambda link, **k: seen.append(k))
+    link = types.SimpleNamespace(hello={"project": "mygame"}, status=lambda text: None, send=lambda frame: None)
+    with pytest.raises(RuntimeError):
+        cli.run_prompt(link, "explore the level", sent=[], **kwargs)
+    return seen[0] if seen else None
+
+
+def test_a_desk_run_is_not_checked_against_the_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.aura, "enabled", lambda: False)
+    desk = types.SimpleNamespace(end=lambda report: None)
+    assert run_prompt_estimates(monkeypatch, tmp_path, kind="goal", desk=desk) is None
+
+
+def test_explore_minutes_count_only_for_an_exploration(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.aura, "enabled", lambda: False)
+    assert run_prompt_estimates(monkeypatch, tmp_path, kind="goal", explore_minutes=20)["play_minutes"] is None
+    assert run_prompt_estimates(monkeypatch, tmp_path, kind="explore", explore_minutes=20)["play_minutes"] == 20
+
+
+def test_through_aura_the_estimate_uses_the_model_picked_in_aura(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.aura, "enabled", lambda: True)
+    monkeypatch.setattr(cli, "start_aura_run", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no game")))
+    args = run_prompt_estimates(monkeypatch, tmp_path, kind="goal", model="claude-opus-5-5",
+                                aura_model="claude-sonnet-5-5")
+    assert args["model"] == "claude-sonnet-5-5"

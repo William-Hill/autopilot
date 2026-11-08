@@ -652,7 +652,10 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
             timeout = max(timeout or default_timeout(), play_seconds + PAST_PLAY_SECONDS)
         return asked, play_seconds
 
-    over_budget = cost_check(link, model=model, play_minutes=play_minutes or explore_minutes, confirm=confirm_cost)
+    # (not for a run the user's own agent works on: its tokens go to the user's subscription, not to a key)
+    over_budget = None if desk is not None else cost_check(
+        link, model=aura_model or model if aura.enabled() else model, confirm=confirm_cost,
+        play_minutes=play_minutes or (explore_minutes if kind == "explore" else None))
     try:
         if over_budget:
             raise OverBudget(over_budget)
@@ -863,8 +866,8 @@ def project_folder(path=None, name=None):
 
 
 def cmd_estimate(args):
-    """`autopilot estimate` and `autopilot play --estimate`: the expected cost of one run, for each way to pay. Nothing
-    is started and no model is called."""
+    """`autopilot estimate` and `autopilot play --estimate`: the expected cost of one run, for each way to pay. This
+    starts no run and calls no model."""
     e = costmod.estimate(project_folder(args.path, getattr(args, "name", None)), agent=getattr(args, "agent", None),
                          model=args.model, fast=getattr(args, "fast", None), episodes=getattr(args, "episodes", None),
                          minutes=getattr(args, "minutes", None))
@@ -881,12 +884,13 @@ def cmd_estimate(args):
 def cost_check(link, model=None, play_minutes=None, confirm=None):
     """Before a run: its cost estimate, printed and told to the plugin. Returns the words that refuse the run when its
     high estimate is above AUTOPILOT_MAX_USD and confirm() (the user, asked) does not allow it; else None. An
-    estimate that fails never stops a run."""
+    estimate that fails never stops a run. Through Aura, the agent is Claude Code (Aura's usual agent) and the model is
+    the one picked in Aura's chat, when there is one."""
     try:
         through_aura = aura.enabled()
         e = costmod.estimate(codexmod.project_dir(codexmod.project_of(link.hello)), model=model,
-                             minutes=play_minutes)
-        print(costmod.text(e))
+                             agent="claude" if through_aura else None, minutes=play_minutes)
+        print(costmod.text(e, before_run=True))
         with contextlib.suppress(Exception):
             link.status(costmod.summary(e, aura=through_aura))
         over = costmod.over_limit(e, aura=through_aura)
