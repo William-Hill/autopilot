@@ -410,6 +410,7 @@ def test_runs_through_aura_always_use_claude_code(through_aura, monkeypatch, tmp
     monkeypatch.setattr(cli.aura.requests, "Session", FakeAura)
     monkeypatch.setattr(cli, "prepare", lambda link, *a, **k: ("Farm", object()))
     monkeypatch.setattr(cli.runtime, "jev_client", lambda: None)
+    monkeypatch.setattr(cli, "cost_check", lambda *a, **k: None)  # (the estimate asks agents.select too)
     picked = []
 
     def select(name=None):
