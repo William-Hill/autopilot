@@ -381,6 +381,18 @@ test("a stick press stays until the game reads the pad, then clears", async () =
   await p2;
   assert.equal(g2.bridge.pad.axes[1], 0);
 
+  // A press over a hold of the same stick: when the press ends, the stick takes the hold's value again
+  const g3 = makeFakeGame();
+  await g3.bridge.handle("key", { key: "Gamepad_LeftX", mode: "hold", value: 0.25, lease: 10 });
+  const p3 = g3.bridge.handle("key", { key: "Gamepad_LeftX", mode: "press", value: 1 });
+  assert.equal(g3.bridge.pad.axes[0], 1);
+  g3.nav.getGamepads();
+  g3.pump(1);
+  await p3;
+  assert.equal(g3.bridge.pad.axes[0], 0.25);
+  await g3.bridge.handle("key", { key: "Gamepad_LeftX", mode: "release" });
+  assert.equal(g3.bridge.pad.axes[0], 0);
+
   // An explicit hold and release are as before
   await game.bridge.handle("key", { key: "Gamepad_LeftX", mode: "hold", value: -1 });
   game.nav.getGamepads();
