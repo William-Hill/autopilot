@@ -223,3 +223,219 @@ test("the bridge connects only to this machine unless the game allows another ho
   local.connect();
   assert.equal(opened.at(-1), "ws://127.0.0.1:8765/v1/bridge");
 });
+
+// -- the review findings of William-Hill/atl-arcade#386 --------------------------------------------------------------
+
+test("rc follows own properties only, calls own functions only, and writes only what the game exports", async () => {
+  const game = makeFakeGame();
+  const rc = (verb, body) => game.bridge.handle("rc", { verb, body });
+  // What the game registers still works
+  assert.deepEqual(await rc("property", { objectPath: "state", propertyName: "score" }), { score: 7 });
+  assert.deepEqual(await rc("call", { objectPath: "game", functionName: "addPoints", parameters: { points: 1 } }), { ReturnValue: 8 });
+  // A path through an inherited or a banned name fails
+  await assert.rejects(rc("property", { objectPath: "game.addPoints", propertyName: "constructor" }), /does not follow constructor/);
+  await assert.rejects(rc("property", { objectPath: "game.addPoints.constructor" }), /does not follow constructor/);
+  await assert.rejects(rc("property", { objectPath: "state", propertyName: "__proto__" }), /does not follow __proto__/);
+  await assert.rejects(rc("property", { objectPath: "game.addPoints", propertyName: "prototype" }), /does not follow prototype/);
+  await assert.rejects(rc("property", { objectPath: "constructor" }), /does not follow constructor/);
+  await assert.rejects(rc("property", { objectPath: "toString" }), /inherited/);
+  await assert.rejects(rc("property", { objectPath: "state", propertyName: "hasOwnProperty" }), /inherited/);
+  await assert.rejects(rc("call", { objectPath: "state", functionName: "toString" }), /inherited/);
+  await assert.rejects(rc("call", { objectPath: "game", functionName: "constructor", parameters: { args: ["return 1"] } }), /does not follow constructor/);
+  await assert.rejects(rc("call", { objectPath: "game.addPoints", functionName: "call" }), /inherited/);
+  // A method on a class' prototype is inherited: out of reach
+  class Counter {
+    constructor() {
+      this.n = 0;
+    }
+    bump() {
+      this.n += 1;
+    }
+  }
+  const counter = new Counter();
+  const g2 = makeFakeGame();
+  g2.hooks.objects.counter = counter;
+  await assert.rejects(g2.bridge.handle("rc", { verb: "call", body: { objectPath: "counter", functionName: "bump" } }), /inherited/);
+  assert.equal(counter.n, 0);
+  const d = await g2.bridge.handle("rc", { verb: "describe", body: { objectPath: "counter" } });
+  assert.deepEqual(d.Properties.map((p) => p.Name), ["n"]);
+  assert.deepEqual(d.Functions, []);
+  assert.equal(d.Class, "Counter");
+  // A write needs the game's export (rcWritable)
+  await assert.rejects(rc("property", { objectPath: "state", propertyName: "speed", propertyValue: { speed: 99 }, access: "WRITE_ACCESS" }), /not writable/);
+  assert.equal(game.state.speed, 0);
+  await assert.rejects(rc("property", { objectPath: "game", propertyName: "addPoints", propertyValue: { addPoints: 1 }, access: "WRITE_ACCESS" }), /not writable/);
+  assert.equal(typeof game.hooks.objects.game.addPoints, "function");
+  await rc("property", { objectPath: "state", propertyName: "score", propertyValue: { score: 3 }, access: "WRITE_ACCESS" });
+  assert.equal(game.state.score, 3);
+});
+
+// A fake WebSocket the test opens, feeds and closes by hand.
+function fakeSockets() {
+  const sockets = [];
+  class FakeWS {
+    constructor(url) {
+      this.url = url;
+      this.readyState = 0;
+      this.sent = [];
+      sockets.push(this);
+    }
+    send(s) {
+      this.sent.push(JSON.parse(s));
+    }
+    close() {
+      this.readyState = 3;
+      this.onclose?.();
+    }
+    open() {
+      this.readyState = 1;
+      this.onopen?.();
+      this.onmessage?.({ data: JSON.stringify({ type: "welcome", session: "s1" }) });
+    }
+    request(id, op, args) {
+      this.onmessage?.({ data: JSON.stringify({ type: "request", id, op, args }) });
+    }
+    responses() {
+      return this.sent.filter((f) => f.type === "response");
+    }
+  }
+  return { sockets, WebSocket: FakeWS };
+}
+
+const settle = () => new Promise((r) => setTimeout(r, 0));
+
+test("an answer goes only to the socket that sent the request", async () => {
+  const { sockets, WebSocket } = fakeSockets();
+  const game = makeFakeGame({ WebSocket });
+  game.bridge.connect();
+  const a = sockets[0];
+  a.open();
+  a.request(1, "watch", { objects: ["/Scene/Player"], seconds: 0.05 });
+  a.close(); // the agent leaves while its watch runs
+  game.bridge.connect(); // the next agent
+  const b = sockets[1];
+  b.open();
+  b.request(2, "ping", {});
+  for (let i = 0; i < 10; i += 1) {
+    game.pump(1);
+    await settle();
+  }
+  assert.deepEqual(b.responses().map((r) => r.id), [2]); // never A's watch
+  assert.deepEqual(a.responses(), []);
+  // A late close of the old socket changes nothing on the new one
+  a.onclose();
+  assert.equal(game.bridge.state, "connected");
+  game.bridge.close();
+});
+
+test("release_all and close() let go of a tap in flight", async () => {
+  const game = makeFakeGame();
+  const pressed = game.bridge.handle("key", { key: "SpaceBar", mode: "press" });
+  assert.ok(game.down.has("Space"));
+  await game.bridge.handle("key", { mode: "release_all" });
+  assert.ok(!game.down.has("Space"));
+  game.pump(5);
+  await pressed;
+  assert.deepEqual(game.keyLog, ["keydown:Space", "keyup:Space"]); // (one keyup only)
+
+  const g2 = makeFakeGame();
+  g2.bridge.handle("key", { key: "E", mode: "press" }).catch(() => {});
+  g2.bridge.handle("input", { action: "jump" }).catch(() => {});
+  assert.ok(g2.down.has("KeyE") && g2.down.has("Space"));
+  g2.bridge.close();
+  assert.ok(!g2.down.has("KeyE") && !g2.down.has("Space"));
+
+  // An agent that leaves lets go of its taps too
+  const { sockets, WebSocket } = fakeSockets();
+  const g3 = makeFakeGame({ WebSocket });
+  g3.bridge.connect();
+  sockets[0].open();
+  sockets[0].request(1, "key", { key: "Q", mode: "press" });
+  assert.ok(g3.down.has("KeyQ"));
+  sockets[0].close();
+  assert.ok(!g3.down.has("KeyQ"));
+  g3.bridge.close();
+});
+
+test("a stick press stays until the game reads the pad, then clears", async () => {
+  const game = makeFakeGame();
+  const pad = game.bridge.pad;
+  let done = false;
+  const pressed = game.bridge.handle("key", { key: "Gamepad_LeftX", mode: "press", value: 1 }).then(() => (done = true));
+  assert.equal(pad.axes[0], 1); // (not cleared in the same call)
+  game.pump(3);
+  await settle();
+  assert.equal(pad.axes[0], 1); // the game has not read the pad yet
+  assert.equal(done, false);
+  assert.equal(game.nav.getGamepads()[0].axes[0], 1); // the game's sample sees the press
+  game.pump(1);
+  await pressed;
+  assert.equal(pad.axes[0], 0);
+  assert.equal(game.nav.getGamepads().length, 0); // (idle: listed no more)
+
+  // A game that never reads the pad: the press clears after PAD_PRESS_MAX_MS
+  const g2 = makeFakeGame();
+  const p2 = g2.bridge.handle("key", { key: "Gamepad_LeftY", mode: "press", value: 1 });
+  assert.equal(g2.bridge.pad.axes[1], -1);
+  g2.pump(70); // 1120 ms
+  await p2;
+  assert.equal(g2.bridge.pad.axes[1], 0);
+
+  // An explicit hold and release are as before
+  await game.bridge.handle("key", { key: "Gamepad_LeftX", mode: "hold", value: -1 });
+  game.nav.getGamepads();
+  game.pump(3);
+  assert.equal(pad.axes[0], -1);
+  await game.bridge.handle("key", { key: "Gamepad_LeftX", mode: "release" });
+  assert.equal(pad.axes[0], 0);
+});
+
+test("a key that a hold and a tap share goes up only when the last owner lets go", async () => {
+  // A hold of the action push (KeyW) and a tap of W share KeyW
+  const game = makeFakeGame();
+  await game.bridge.handle("input", { action: "push", mode: "hold" });
+  const tapped = game.bridge.handle("key", { key: "W", mode: "press" });
+  game.pump(5);
+  await tapped;
+  assert.ok(game.down.has("KeyW")); // the tap's end does not end the hold
+  assert.deepEqual(game.keyLog, ["keydown:KeyW"]);
+  await game.bridge.handle("input", { action: "push", mode: "release" });
+  assert.deepEqual(game.keyLog, ["keydown:KeyW", "keyup:KeyW"]);
+
+  // A tap first, then a hold while the tap is in flight
+  const g2 = makeFakeGame();
+  const t2 = g2.bridge.handle("key", { key: "W", mode: "press" });
+  await g2.bridge.handle("key", { key: "W", mode: "hold", lease: 10 });
+  g2.pump(5);
+  await t2;
+  assert.ok(g2.down.has("KeyW"));
+  await g2.bridge.handle("key", { key: "W", mode: "release" });
+  assert.deepEqual(g2.keyLog, ["keydown:KeyW", "keyup:KeyW"]);
+
+  // An agent's hold and a game hook's hold of the same key
+  const g3 = makeFakeGame();
+  await g3.bridge.handle("key", { key: "W", mode: "hold", lease: 10 });
+  g3.hooks.move = async ({ keys }) => {
+    keys.hold("W");
+    await keys.frame();
+    keys.release("W");
+  };
+  const moving = g3.bridge.handle("move", { direction: { X: 1, Y: 0, Z: 0 }, seconds: 0.1 });
+  g3.pump(2);
+  await moving;
+  assert.ok(g3.down.has("KeyW")); // the agent still holds W
+  await g3.bridge.handle("key", { key: "W", mode: "release" });
+  assert.ok(!g3.down.has("KeyW"));
+});
+
+test("close() ends the ops still waiting; an op that ended before keeps its result", async () => {
+  const game = makeFakeGame();
+  const early = game.bridge.handle("watch", { objects: ["/Scene/Rail"], seconds: 0 });
+  game.pump(1);
+  assert.deepEqual(await early, { changes: [] });
+  const w = game.bridge.handle("watch", { objects: ["/Scene/Player"], seconds: 60 });
+  game.pump(2);
+  game.bridge.close();
+  await assert.rejects(w, /the bridge is closed/);
+  await assert.rejects(game.bridge.handle("ping", {}), /the bridge is closed/);
+});
