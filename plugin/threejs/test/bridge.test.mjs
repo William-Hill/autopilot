@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createBridge, isLoopbackUrl, keySpec, makeFrame, project, unrealName, worldBox } from "../autopilot-bridge.js";
-import { camera, makeFakeGame, object } from "./fake_game.mjs";
+import { add, camera, makeFakeGame, object } from "./fake_game.mjs";
 
 test("the kit frame is Godot's: kit = 100 * (-z, x, y)", () => {
   const f = makeFrame(1);
@@ -450,4 +450,125 @@ test("close() ends the ops still waiting; an op that ended before keeps its resu
   game.bridge.close();
   await assert.rejects(w, /the bridge is closed/);
   await assert.rejects(game.bridge.handle("ping", {}), /the bridge is closed/);
+});
+
+// -- the review findings of William-Hill/atl-arcade#388 --------------------------------------------------------------
+
+test("connect() keeps a socket that is open or opening; a new one comes after it closes", () => {
+  const { sockets, WebSocket } = fakeSockets();
+  const game = makeFakeGame({ WebSocket });
+  game.bridge.connect();
+  game.bridge.connect(); // (opening: no second socket)
+  assert.equal(sockets.length, 1);
+  sockets[0].open();
+  game.bridge.connect(); // (open: no second socket)
+  assert.equal(sockets.length, 1);
+  sockets[0].close();
+  game.bridge.connect();
+  assert.equal(sockets.length, 2);
+  game.bridge.close();
+  assert.equal(sockets[1].readyState, 3); // close() closes the one live socket
+});
+
+test("2 fallback moves that hold the same key each let go of their own hold", async () => {
+  const game = makeFakeGame();
+  const long = game.bridge.handle("move", { direction: { X: 1, Y: 0, Z: 0 }, seconds: 0.3, via: "keys" });
+  const short = game.bridge.handle("move", { direction: { X: 1, Y: 0, Z: 0 }, seconds: 0.05, via: "keys" });
+  await short;
+  assert.ok(game.down.has("KeyW")); // the long move still holds W
+  await long;
+  assert.ok(!game.down.has("KeyW"));
+  assert.deepEqual(game.keyLog, ["keydown:KeyW", "keyup:KeyW"]);
+});
+
+test("a move with a bad move key fails before any key goes down", async () => {
+  const game = makeFakeGame({ options: { moveKeys: { right: "Keyd" } } });
+  // forward and right: W and the bad key
+  await assert.rejects(game.bridge.handle("move", { direction: { X: 1, Y: 1, Z: 0 }, seconds: 0.05, via: "keys" }), /Unknown move key Keyd/);
+  assert.deepEqual(game.keyLog, []);
+  assert.equal(game.down.size, 0);
+});
+
+test("close() ends a fallback move that still waits, and lets go of its keys", async () => {
+  const game = makeFakeGame();
+  const started = Date.now();
+  const moving = game.bridge.handle("move", { direction: { X: 1, Y: 0, Z: 0 }, seconds: 30, via: "keys" });
+  assert.ok(game.down.has("KeyW"));
+  game.bridge.close();
+  await assert.rejects(moving, /the bridge is closed/);
+  assert.ok(Date.now() - started < 5000);
+  assert.ok(!game.down.has("KeyW"));
+  // A move that ended before the close keeps its result
+  const g2 = makeFakeGame();
+  const r = await g2.bridge.handle("move", { direction: { X: 1, Y: 0, Z: 0 }, seconds: 0.02, via: "keys" });
+  assert.equal(r.via, "keys");
+  g2.bridge.close();
+});
+
+test("watch compares a turn across the 180 degree line by the short way", async () => {
+  const game = makeFakeGame();
+  const spinner = add(game.scene, object("Spinner", "Group", [0, 0, -2]));
+  // A yaw of `deg` (kit): forward [sin, 0, -cos], so the matrix' z column is [-sin, 0, cos]
+  const yaw = (deg) => {
+    const r = (deg * Math.PI) / 180;
+    const e = spinner.matrixWorld.elements;
+    [e[0], e[2], e[8], e[10]] = [Math.cos(r), Math.sin(r), -Math.sin(r), Math.cos(r)];
+  };
+  yaw(179.8);
+  const small = game.bridge.handle("watch", { objects: ["/Scene/Spinner"], seconds: 0.05 });
+  yaw(-179.8); // 0.4 degrees
+  game.pump(5);
+  assert.deepEqual((await small).changes, []);
+  const big = game.bridge.handle("watch", { objects: ["/Scene/Spinner"], seconds: 0.05 });
+  yaw(170); // 10.2 degrees
+  game.pump(5);
+  assert.deepEqual((await big).changes.map((c) => c.what), ["turned"]);
+});
+
+test("an rc path with a banned part fails with 403, also after a missing part", async () => {
+  const game = makeFakeGame();
+  const rc = (body) => game.bridge.handle("rc", { verb: "property", body });
+  for (const body of [
+    { objectPath: "state.nothing.constructor" },
+    { objectPath: "nothing.__proto__" },
+    { objectPath: "state", propertyName: "nothing.constructor" },
+    { objectPath: "state", propertyName: "nothing:prototype" },
+  ])
+    await assert.rejects(rc(body), (e) => e.status === 403 && /does not follow/.test(e.message), JSON.stringify(body));
+  // A missing path with no banned part is still 404
+  await assert.rejects(rc({ objectPath: "state.nothing.deeper" }), (e) => e.status === 404);
+  await assert.rejects(rc({ objectPath: "state", propertyName: "nothing.deeper" }), (e) => e.status === 404);
+});
+
+test("an rc write never writes a property name with a dot or a colon", async () => {
+  const state = { inner: { x: 1 } };
+  const game = makeFakeGame({ options: { hooks: { player: () => null, objects: { state }, rcWritable: ["state.inner.x", "state.inner"] } } });
+  const write = (objectPath, propertyName) =>
+    game.bridge.handle("rc", { verb: "property", body: { objectPath, propertyName, propertyValue: { [propertyName]: 5 }, access: "WRITE_ACCESS" } });
+  await assert.rejects(write("state", "inner.x"), /not writable/);
+  await assert.rejects(write("state", "inner:x"), /not writable/);
+  assert.equal(state["inner.x"], undefined);
+  await write("state.inner", "x"); // (the declared object and property)
+  assert.equal(state.inner.x, 5);
+});
+
+test("record start fails, and records nothing, when the picture canvas goes away after the probe", async () => {
+  const pic = { width: 320, height: 200 };
+  let calls = 0;
+  const doc = {
+    createElement: () => ({ getContext: () => ({ drawImage() {} }), toDataURL: () => "data:image/jpeg;base64,AA" }),
+  };
+  const { sockets, WebSocket } = fakeSockets();
+  const game = makeFakeGame({ WebSocket, options: { document: doc, pictureCanvas: () => (calls++ === 0 ? pic : null) } });
+  await assert.rejects(game.bridge.handle("record", { action: "start" }), (e) => e.status === 409 && /no picture/.test(e.message));
+  // The canvas comes back: no recording is on, so no frame goes out
+  calls = 0;
+  game.bridge.connect();
+  sockets[0].open();
+  for (let i = 0; i < 20; i += 1) {
+    calls = 0;
+    game.pump(1);
+  }
+  assert.deepEqual(sockets[0].sent.filter((f) => f.type === "frame"), []);
+  game.bridge.close();
 });

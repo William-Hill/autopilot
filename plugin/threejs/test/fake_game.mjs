@@ -45,7 +45,8 @@ export function camera(at = [0, 2, 10]) {
   return cam;
 }
 
-export function makeFakeGame({ url, WebSocket } = {}) {
+// options: more createBridge options (they win over the stand-in's own)
+export function makeFakeGame({ url, WebSocket, options = {} } = {}) {
   const scene = object("Scene", "Scene");
   const ground = add(scene, object("Ground", "Mesh", [0, -0.05, 0], [100, 0.05, 100]));
   const rail = add(scene, object("Rail", "Mesh", [2, 0.5, 0], [0.05, 0.05, 3], { class: "Rail", thing: true }));
@@ -110,7 +111,7 @@ export function makeFakeGame({ url, WebSocket } = {}) {
   const bridge = createBridge({
     url, WebSocket, scene, camera: cam, canvas: null, keyTarget, hooks, project: "Fake Rink",
     global: { navigator: nav, addEventListener() {}, removeEventListener() {} }, document: null,
-    now: () => clock, requestFrame,
+    now: () => clock, requestFrame, ...options,
   });
   return { bridge, hooks, scene, player, rail, rail2, cone, ground, camera: cam, state, down, keyLog, pump, nav };
 }

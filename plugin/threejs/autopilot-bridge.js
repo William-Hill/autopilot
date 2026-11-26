@@ -438,7 +438,8 @@ export function createBridge(options = {}) {
   }
 
   function connect() {
-    if (closed || !WS) return;
+    // (one socket at a time: a socket that is open or opening stays; a retry comes after it closes)
+    if (closed || !WS || ws) return;
     if (!options.allowRemote && !isLoopbackUrl(url)) {
       state = "refused";
       options.onStatus?.(`refused: ${url} is not on this machine (the game must pass allowRemote to connect there)`);
@@ -559,6 +560,22 @@ export function createBridge(options = {}) {
     });
   }
   const closedError = () => new OpError("the bridge is closed", 410);
+
+  // A wait of ms in wall time that close() ends with an error, as it ends the ops that wait for a frame.
+  function sleep(ms) {
+    return new Promise((resolveP, rejectP) => {
+      if (closed) {
+        rejectP(closedError());
+        return;
+      }
+      const w = { reject: rejectP, cancel: () => clearTimeout(timer) };
+      const timer = setTimeout(() => {
+        waiting.delete(w);
+        resolveP();
+      }, ms);
+      waiting.add(w);
+    });
+  }
 
   // -- the frame loop: deferred answers, held keys, heartbeats, recording ---------------------------------------------
 
@@ -987,6 +1004,9 @@ export function createBridge(options = {}) {
     return false;
   }
 
+  // The shortest turn between 2 angles in degrees (179.8 to -179.8 is 0.4)
+  const turn = (a, b) => Math.abs(((((a - b) % 360) + 540) % 360) - 180);
+
   function watchOp(args) {
     const paths = (args.objects ?? []).map(String);
     const seconds = Number(args.seconds ?? 0.6);
@@ -1010,7 +1030,7 @@ export function createBridge(options = {}) {
         else if (first && now) {
           const d = Math.hypot(now.location.X - first.location.X, now.location.Y - first.location.Y, now.location.Z - first.location.Z);
           if (d > 1) note("moved");
-          if (Math.abs(now.rotation.Yaw - first.rotation.Yaw) > 1 || Math.abs(now.rotation.Pitch - first.rotation.Pitch) > 1) note("turned");
+          if (turn(now.rotation.Yaw, first.rotation.Yaw) > 1 || turn(now.rotation.Pitch, first.rotation.Pitch) > 1) note("turned");
           if (Math.abs(now.extent.X - first.extent.X) + Math.abs(now.extent.Y - first.extent.Y) + Math.abs(now.extent.Z - first.extent.Z) > 1) note("size");
           if (now.active !== first.active) note(now.active ? "shown" : "hidden");
         }
@@ -1305,6 +1325,7 @@ export function createBridge(options = {}) {
   // `move`: walk the player in a kit direction for `seconds`. The game's move hook when it has one; else W/A/S/D
   // (moveKeys) held camera-relative (8 directions), as the Godot plugin's "keys". In 2D the keys are screen-relative:
   // kit X is right, kit Z is up.
+  let moveSeq = 0;
   async function moveOp(args) {
     const p0 = playerNow();
     if (!p0) throw new OpError("No player", 404);
@@ -1335,9 +1356,25 @@ export function createBridge(options = {}) {
         rv = want[0] * right[0] + want[2] * right[2];
       }
       const keys = [[fv > 0.38, moveKeys.up], [fv < -0.38, moveKeys.down], [rv < -0.38, moveKeys.left], [rv > 0.38, moveKeys.right]].filter(([on]) => on).map(([, k]) => k);
-      for (const k of keys) keysForHooks.hold(k);
-      await new Promise((r) => setTimeout(r, seconds * 1000));
-      for (const k of keys) keysForHooks.release(k);
+      // Every key name first: a bad one fails the move before any key goes down
+      const specs = keys.map((k) => {
+        const spec = keySpec(k);
+        if (!spec) throw new OpError(`Unknown move key ${k} (moveKeys)`);
+        return spec;
+      });
+      // Each move is its own owner, so 2 moves that hold W at the same time each let go of their own hold only
+      moveSeq += 1;
+      const mine = specs.map((spec, i) => {
+        const owner = `move:${moveSeq}:${keys[i]}`;
+        held.set(owner, { spec, value: 1, renewed: Infinity, until: 0 });
+        press(owner, spec, 1);
+        return owner;
+      });
+      try {
+        await sleep(seconds * 1000);
+      } finally {
+        for (const owner of mine) drop(owner);
+      }
     }
     const p1 = playerNow();
     const end = p1 ? p1.position : start;
@@ -1501,8 +1538,14 @@ export function createBridge(options = {}) {
   }
 
   // An object by path: a scene path (/Scene/Player), or a name in hooks.objects, with ".a.b" to go inside it.
+  // A path with a banned part fails (403) whatever its other parts are, before any lookup.
+  function rcCheckParts(parts, where) {
+    for (const k of parts) if (RC_BANNED.has(k)) throw new OpError(`${where}: rc does not follow ${k}`, 403);
+  }
+
   function rcResolve(path) {
     const s = String(path ?? "");
+    rcCheckParts(s.split("."), s);
     const o = resolve(s);
     if (o) return o.rcTarget ?? o;
     const [head, ...rest] = s.split(".");
@@ -1542,7 +1585,8 @@ export function createBridge(options = {}) {
 
   function rcWritable(objectPath, name) {
     const list = hooks.rcWritable;
-    if (!list || RC_BANNED.has(name)) return false;
+    // (a property name with "." or ":" never writes: "state.inner.x" names the x of state.inner, not a key "inner.x")
+    if (!list || RC_BANNED.has(name) || /[.:]/.test(name)) return false;
     const want = `${objectPath}.${name}`;
     return Array.isArray(list) ? list.includes(want) : typeof list.has === "function" && list.has(want);
   }
@@ -1562,6 +1606,7 @@ export function createBridge(options = {}) {
       }
       if (!name) return plain(obj, 0, true);
       let v = obj;
+      rcCheckParts(String(name).split(/[.:]/), `${body.objectPath} ${name}`);
       for (const part of String(name).split(/[.:]/)) {
         v = rcStep(v, part, `${body.objectPath} ${name}`);
         if (v === undefined) break;
@@ -1640,10 +1685,13 @@ export function createBridge(options = {}) {
 
   function startRecording(args) {
     if (!picture(64, 50)) throw new OpError("no picture: the canvas can't be read", 409);
-    const f = Number(args.fps ?? 5);
-    recording = { fps: Number.isFinite(f) && f > 0 ? Math.max(0.1, Math.min(60, f)) : 5, maxDim: clampDim(args.max_dim, 960), quality: clampQuality(args.quality, 75), n: 0, sent: 0, next: 0 };
+    // The canvas the frames read, as the probe left it: the recording starts only when it has a size
     const c = pictureCanvas();
-    const k = Math.min(1, recording.maxDim / Math.max(c.width, c.height));
+    if (!c || !(c.width > 0) || !(c.height > 0)) throw new OpError("no picture: the canvas can't be read", 409);
+    const f = Number(args.fps ?? 5);
+    const maxDim = clampDim(args.max_dim, 960);
+    const k = Math.min(1, maxDim / Math.max(c.width, c.height));
+    recording = { fps: Number.isFinite(f) && f > 0 ? Math.max(0.1, Math.min(60, f)) : 5, maxDim, quality: clampQuality(args.quality, 75), n: 0, sent: 0, next: 0 };
     return { recording: true, width: Math.round(c.width * k), height: Math.round(c.height * k) };
   }
 
@@ -1683,7 +1731,10 @@ export function createBridge(options = {}) {
       stopRecording();
       // The ops still waiting end now (a watch, a tap, a hook's frame): none waits for a frame that never comes
       deferred.length = 0;
-      for (const w of waiting) w.reject(closedError());
+      for (const w of waiting) {
+        w.cancel?.();
+        w.reject(closedError());
+      }
       waiting.clear();
       uninstallPad();
       g.removeEventListener?.("error", onError);
