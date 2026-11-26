@@ -103,6 +103,7 @@ export function makeFakeGame({ url, WebSocket } = {}) {
     paused: () => state.paused,
     gameTime: () => state.time,
     objects: { state, game: { addPoints: (n) => (state.score += Number(n.points ?? n)) } },
+    rcWritable: ["state.score"],
   };
 
   const nav = { getGamepads: () => [] };
@@ -111,7 +112,7 @@ export function makeFakeGame({ url, WebSocket } = {}) {
     global: { navigator: nav, addEventListener() {}, removeEventListener() {} }, document: null,
     now: () => clock, requestFrame,
   });
-  return { bridge, scene, player, rail, rail2, cone, ground, camera: cam, state, down, keyLog, pump, nav };
+  return { bridge, hooks, scene, player, rail, rail2, cone, ground, camera: cam, state, down, keyLog, pump, nav };
 }
 
 // `node fake_game.mjs ws://127.0.0.1:<port>/v1/bridge`: connect to that agent service and run frames in real time

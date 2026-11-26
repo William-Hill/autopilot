@@ -37,6 +37,11 @@ connects to can read the game, press its keys and call its functions, so a link 
 must not take a player's game over: the bridge refuses such an address (state `refused`) unless the game itself
 passes `allowRemote: true`. The browser's WebSocket cannot send an `Authorization` header, so the bridge sends no token.
 
+An answer goes only to the socket that sent the request: an op that ends after its agent left never answers the next
+agent. A tap in flight is held like a hold, so `release_all`, a lost agent and `close()` let it go; a key that a hold
+and a tap share goes up when the last of them lets go. `close()` ends the ops still waiting (a `watch`, a tap) with
+an error.
+
 `connectBridge`'s comment in the module lists every option and hook. Only `player` is needed for the kit's player
 reads; without `restart`, `session` restart answers 501; without `render`, a canvas made without
 `preserveDrawingBuffer` can read back black.
@@ -55,7 +60,7 @@ frame is the Godot plugin's 2D frame (kit X right, kit Z up, 1 unit = 1 kit unit
 | `view`, `watch` | frustum and box tests on the scene's things; no line-of-sight test |
 | `key`, `input`, `move`, `pointer` | KeyboardEvents on the page, a virtual standard gamepad in `navigator.getGamepads()`, pointer and mouse events on the canvas; `move` through the `move` hook, else W/A/S/D relative to the camera |
 | `screen`, `ui`, `ui_act` | the page's DOM |
-| `rc` | `property`, `call`, `describe` on the scene's objects and on the `objects` hook |
+| `rc` | `property`, `call`, `describe` on the scene's objects and on the `objects` hook: own properties only (no `__proto__`, `prototype` or `constructor`), calls of own functions only, and writes only of what the game lists in the `rcWritable` hook (`["state.score"]`; nothing by default) |
 | `capture`, `record` | the canvas as JPEG, after the `render` hook |
 | `session`, `levels`, `pause`, `ping`, `context` | the `restart`, `levels`, `pause` hooks |
 | `codex_manifest`, `codex_read` | not answered (`unknown op`): the brain copies the codex from the project folder on disk |

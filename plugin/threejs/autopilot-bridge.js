@@ -23,6 +23,8 @@ export const DEFAULT_URL = "ws://127.0.0.1:8765/v1/bridge";
 const KEY_TAP_MS = 50;
 const KEY_TAP_FRAMES = 2;
 const DEFAULT_LEASE = 1.0;
+// A stick press stays until the game reads the virtual pad once, or this long if the game never reads it.
+const PAD_PRESS_MAX_MS = 1000;
 
 // -- the kit frame -------------------------------------------------------------------------------------------------
 //
@@ -264,6 +266,7 @@ export function createVirtualPad() {
     buttons,
     axes,
     active: false,
+    reads: 0, // how many times the game read the pad (getGamepads while it is on)
     setButton(i, value) {
       buttons[i] = { pressed: value > 0.5, touched: value > 0, value };
       this.active = true;
@@ -287,6 +290,7 @@ function installGamepad(nav, pad) {
   nav.getGamepads = () => {
     const real = Array.from(original() ?? []);
     if (!pad.active) return real;
+    pad.reads += 1;
     return [pad, ...real.filter(Boolean)];
   };
   return () => {
@@ -351,7 +355,9 @@ export class OpError extends Error {
 //                  keys W/A/S/D held camera-relative); keys: {hold(name), release(name)};
 //     render(): render one frame now, so the canvas holds a picture to read (frames, stills);
 //     uiRoot: the DOM element the game's UI is under (document.body);
-//     objects: {name: object} the `rc` reads and calls reach by name (game.get("state", "score"));
+//     objects: {name: object} the `rc` reads and calls reach by name (game.get("state", "score")): through own
+//              properties only, never "__proto__", "prototype" or "constructor", and calls of own functions only;
+//     rcWritable: ["state.score", ...]: what `rc` may write, as "object.property" (nothing by default);
 //     classOf(object) -> string: an object's class for `find` (default: userData.class, else its type).
 export function connectBridge(options = {}) {
   const bridge = createBridge(options);
@@ -394,7 +400,6 @@ export function createBridge(options = {}) {
   let pointer = null; // the canvas' CSS pixels from its top left, null: its middle
   let frames = 0;
   let events = [];
-  const held = new Map(); // key name -> {spec, value, renewed (ms), until (game seconds) }
   const deferred = []; // per-frame tickers: fn(now) -> true when done
   let recording = null;
   let heartbeatAt = 0;
@@ -406,7 +411,13 @@ export function createBridge(options = {}) {
   // -- the link ------------------------------------------------------------------------------------------------------
 
   function send(obj) {
-    if (ws && ws.readyState === 1) ws.send(typeof obj === "string" ? obj : JSON.stringify(obj));
+    sendOn(ws, obj);
+  }
+
+  // A message on one socket: only while it is the bridge's socket now and open. A request's answer goes to the socket
+  // the request came on, so an op that ends after its agent left never answers the next agent.
+  function sendOn(sock, obj) {
+    if (sock && sock === ws && sock.readyState === 1) sock.send(typeof obj === "string" ? obj : JSON.stringify(obj));
   }
 
   function hello() {
@@ -434,32 +445,40 @@ export function createBridge(options = {}) {
       return;
     }
     state = "connecting";
+    let sock;
     try {
-      ws = new WS(url);
+      sock = new WS(url);
     } catch (e) {
       state = "error";
       retry();
       return;
     }
-    ws.onopen = () => send(hello());
-    ws.onmessage = (m) => {
+    ws = sock;
+    sock.onopen = () => sendOn(sock, hello());
+    sock.onmessage = (m) => {
+      if (sock !== ws) return;
       let f;
       try {
         f = JSON.parse(typeof m.data === "string" ? m.data : String(m.data));
       } catch {
         return;
       }
-      onFrame(f);
+      onFrame(f, sock);
     };
-    ws.onclose = () => {
+    sock.onclose = () => {
+      // (a socket the bridge left already: nothing to do)
+      if (sock !== ws) return;
       ws = null;
-      if (state === "connected") emitLocal("disconnected");
+      const wasConnected = state === "connected";
+      if (wasConnected) emitLocal("disconnected");
       state = closed ? "closed" : "connecting";
-      releaseAll();
+      // The agent's holds end with its connection. A connect that failed had
+      // no agent, so it keeps the holds of a running op (a game move hook).
+      if (wasConnected) releaseAll();
       stopRecording();
       retry();
     };
-    ws.onerror = () => {};
+    sock.onerror = () => {};
   }
 
   function retry() {
@@ -472,7 +491,7 @@ export function createBridge(options = {}) {
     options.onStatus?.(what);
   }
 
-  function onFrame(f) {
+  function onFrame(f, sock) {
     switch (f.type) {
       case "welcome":
         state = "connected";
@@ -481,7 +500,7 @@ export function createBridge(options = {}) {
         emitLocal("connected");
         break;
       case "request":
-        handleRequest(f);
+        handleRequest(f, sock);
         break;
       case "status":
         options.onStatus?.(`status: ${f.text ?? ""}`);
@@ -497,18 +516,49 @@ export function createBridge(options = {}) {
     }
   }
 
-  async function handleRequest(f) {
+  async function handleRequest(f, sock) {
     const id = f.id;
+    const reply = (obj) => sendOn(sock, obj);
     try {
-      const result = await handle(String(f.op ?? ""), f.args && typeof f.args === "object" ? f.args : {}, id);
+      const result = await handle(String(f.op ?? ""), f.args && typeof f.args === "object" ? f.args : {}, id, reply);
       if (result === RESPONDED) return;
-      send({ type: "response", id, ok: true, result: result ?? {}, t: t() });
+      reply({ type: "response", id, ok: true, result: result ?? {}, t: t() });
     } catch (e) {
-      send({ type: "response", id, ok: false, status: e instanceof OpError ? e.status : 500, error: String(e?.message ?? e), t: t() });
+      reply({ type: "response", id, ok: false, status: e instanceof OpError ? e.status : 500, error: String(e?.message ?? e), t: t() });
     }
   }
 
   const RESPONDED = Symbol("responded");
+
+  // An op that ends on a later frame: step(now) runs each frame and gives WAIT until it has the result. close() rejects
+  // the ops still waiting, so none waits forever; an op that ended before close() keeps its result.
+  const WAIT = Symbol("wait");
+  const waiting = new Set();
+  function later(step) {
+    return new Promise((resolveP, rejectP) => {
+      if (closed) {
+        rejectP(closedError());
+        return;
+      }
+      const w = { reject: rejectP };
+      waiting.add(w);
+      deferred.push((now) => {
+        let v;
+        try {
+          v = step(now);
+        } catch (e) {
+          waiting.delete(w);
+          rejectP(e);
+          return true;
+        }
+        if (v === WAIT) return false;
+        waiting.delete(w);
+        resolveP(v);
+        return true;
+      });
+    });
+  }
+  const closedError = () => new OpError("the bridge is closed", 410);
 
   // -- the frame loop: deferred answers, held keys, heartbeats, recording ---------------------------------------------
 
@@ -550,7 +600,8 @@ export function createBridge(options = {}) {
 
   // -- ops -----------------------------------------------------------------------------------------------------------
 
-  async function handle(op, args, id) {
+  async function handle(op, args, id, reply) {
+    if (closed) throw closedError();
     switch (op) {
       case "ping":
         return { game_time: t(), wall_time: Date.now() / 1000 };
@@ -595,7 +646,9 @@ export function createBridge(options = {}) {
       case "capture": {
         const pic = picture(clampDim(args.max_dim, 1920), clampQuality(args.quality, 90));
         if (!pic) throw new OpError("no picture: the canvas can't be read", 409);
-        send(`{"type":"response","id":${JSON.stringify(id)},"ok":true,"result":{"width":${pic.width},"height":${pic.height},"t":${t()},"jpeg":"${pic.jpeg}"},"t":${t()}}`);
+        if (!reply) return { width: pic.width, height: pic.height, t: t(), jpeg: pic.jpeg };
+        // (the JPEG as it is, without a JSON pass over a long string)
+        reply(`{"type":"response","id":${JSON.stringify(id)},"ok":true,"result":{"width":${pic.width},"height":${pic.height},"t":${t()},"jpeg":"${pic.jpeg}"},"t":${t()}}`);
         return RESPONDED;
       }
       case "record":
@@ -963,14 +1016,11 @@ export function createBridge(options = {}) {
         }
       }
     };
-    return new Promise((resolveP) => {
-      const until = nowMs() + seconds * 1000;
-      deferred.push((now) => {
-        sample();
-        if (now < until) return false;
-        resolveP({ changes: [...found.values()].sort((a, b) => a.t - b.t) });
-        return true;
-      });
+    const until = nowMs() + seconds * 1000;
+    return later((now) => {
+      sample();
+      if (now < until) return WAIT;
+      return { changes: [...found.values()].sort((a, b) => a.t - b.t) };
     });
   }
 
@@ -1052,37 +1102,124 @@ export function createBridge(options = {}) {
 
   const isAxis = (spec) => spec.kind === "mouse_axis" || spec.kind === "pad_axis";
 
-  // Holds whose lease ran out (or whose timed hold ended) let go; held axes move each frame.
-  function tickKeys(now) {
-    for (const [name, h] of [...held]) {
-      const over = h.until > 0 ? gameTime() >= h.until : now - h.renewed > lease * 1000;
-      if (over) {
-        if (!isAxis(h.spec) || h.spec.kind === "pad_axis") send1(h.spec, false);
-        held.delete(name);
-      } else if (h.spec.kind === "mouse_axis") {
-        send1(h.spec, true, h.rate ? h.value / 60 : h.value);
-      }
+  // Who holds what. `held` maps an owner to its input: an agent's hold ("key:W"), an action's hold ("action:jump"), a
+  // game hook's hold ("hook:W") or a tap in flight ("tap:3"). Owners share a physical input (a hold of an action on
+  // KeyA and a tap of A both press KeyA): `owners` maps the physical input to its owners. The input goes down with its
+  // first owner and up when its last owner lets go.
+  const held = new Map(); // owner -> {spec, value, renewed (ms), until (game seconds), rate}
+  const owners = new Map(); // physical input -> Set of owners
+  let tapSeq = 0;
+
+  // The physical input of a spec, or null for one that has no up (a mouse move, a wheel step).
+  function physicalOf(spec) {
+    switch (spec.kind) {
+      case "key":
+        return `key:${spec.code}`;
+      case "mouse_button":
+        return `mouse:${spec.button}`;
+      case "pad_button":
+        return `pad_button:${spec.button}`;
+      case "pad_axis":
+        return `pad_axis:${spec.axis}`;
+      default:
+        return null;
     }
   }
 
+  // `owner` presses spec. A key or a mouse button goes down only for its first owner; a pad button or stick takes the
+  // new value each time.
+  function press(owner, spec, value = 1) {
+    const id = physicalOf(spec);
+    if (!id) {
+      send1(spec, true, value);
+      return;
+    }
+    let set = owners.get(id);
+    if (!set) owners.set(id, (set = new Set()));
+    const first = set.size === 0;
+    set.add(owner);
+    if (first || spec.kind === "pad_button" || spec.kind === "pad_axis") send1(spec, true, value);
+  }
+
+  // `owner` lets go of spec: the input goes up when no other owner holds it. A pad button or stick that another owner
+  // still holds takes that owner's value again (the newest owner's).
+  function letGo(owner, spec) {
+    const id = physicalOf(spec);
+    if (!id) return;
+    const set = owners.get(id);
+    if (!set || !set.delete(owner)) return;
+    if (set.size) {
+      if (spec.kind === "pad_button" || spec.kind === "pad_axis") {
+        const rest = held.get([...set].at(-1));
+        if (rest) send1(spec, true, rest.value);
+      }
+      return;
+    }
+    owners.delete(id);
+    send1(spec, false);
+  }
+
+  // An owner's hold ends: its input lets go (a held mouse move just stops).
+  function drop(owner) {
+    const h = held.get(owner);
+    if (!h) return;
+    held.delete(owner);
+    letGo(owner, h.spec);
+  }
+
+  // Holds whose lease ran out (or whose timed hold ended) let go; held mouse moves move each frame.
+  function tickKeys(now) {
+    for (const [owner, h] of [...held]) {
+      const over = h.until > 0 ? gameTime() >= h.until : now - h.renewed > lease * 1000;
+      if (over) drop(owner);
+      else if (h.spec.kind === "mouse_axis") send1(h.spec, true, h.rate ? h.value / 60 : h.value);
+    }
+  }
+
+  // Every hold and every tap in flight lets go (release_all, the agent leaves, close()).
   function releaseAll() {
-    for (const [, h] of held) if (!isAxis(h.spec) || h.spec.kind === "pad_axis") send1(h.spec, false);
+    for (const owner of [...held.keys()]) drop(owner);
     held.clear();
+    for (const [id, set] of owners) {
+      // (none should be left: an input whose owner went without a letGo)
+      const [kind, n] = id.split(":");
+      if (set.size && kind === "key") dispatchKey(n, false);
+    }
+    owners.clear();
+  }
+
+  // A tap in flight is an owner too, so release_all and close() let it go.
+  function startTap(spec, value) {
+    tapSeq += 1;
+    const owner = `tap:${tapSeq}`;
+    held.set(owner, { spec, value, renewed: Infinity, until: 0, rate: false });
+    press(owner, spec, value);
+    return owner;
   }
 
   // Taps that wait a moment and a couple of frames before letting go: a game that samples input once a fixed tick
   // misses a shorter one.
-  function tap(spec, value, isHeld) {
-    send1(spec, true, value);
+  function tap(spec, value) {
+    const owner = startTap(spec, value);
     const started = nowMs();
     const f0 = frames;
-    return new Promise((resolveP) => {
-      deferred.push((now) => {
-        if (now - started < KEY_TAP_MS || frames < f0 + KEY_TAP_FRAMES) return false;
-        if (!isHeld()) send1(spec, false);
-        resolveP({});
-        return true;
-      });
+    return later((now) => {
+      if (now - started < KEY_TAP_MS || frames < f0 + KEY_TAP_FRAMES) return WAIT;
+      drop(owner);
+      return {};
+    });
+  }
+
+  // A press of a stick: it stays until the game reads the virtual pad once (or PAD_PRESS_MAX_MS), so a game that
+  // polls the pad each frame sees it.
+  function stickPress(spec, value) {
+    const owner = startTap(spec, value);
+    const reads0 = pad.reads;
+    const started = nowMs();
+    return later((now) => {
+      if (held.has(owner) && pad.reads <= reads0 && now - started < PAD_PRESS_MAX_MS) return WAIT;
+      drop(owner);
+      return {};
     });
   }
 
@@ -1097,35 +1234,32 @@ export function createBridge(options = {}) {
     const spec = keySpec(name);
     if (!spec) throw new OpError(`Unknown key ${name}`);
     const value = Number(args.value ?? 1);
+    const owner = `key:${name}`;
     if (mode === "release") {
-      const h = held.get(name);
-      if (h) {
-        if (!isAxis(spec) || spec.kind === "pad_axis") send1(spec, false);
-        held.delete(name);
-      }
+      drop(owner);
       return {};
     }
     if (mode === "hold") {
-      const h = held.get(name);
+      const h = held.get(owner);
       if (!h) {
-        held.set(name, { spec, value, renewed: nowMs(), until: 0, rate: Boolean(args.rate) });
-        if (!isAxis(spec) || spec.kind === "pad_axis") send1(spec, true, value);
+        held.set(owner, { spec, value, renewed: nowMs(), until: 0, rate: Boolean(args.rate) });
+        if (spec.kind !== "mouse_axis") press(owner, spec, value);
       } else {
-        if (spec.kind === "pad_axis" && h.value !== value) send1(spec, true, value);
+        if (spec.kind === "pad_axis" && h.value !== value) press(owner, spec, value);
         h.value = value;
         h.renewed = nowMs();
         h.rate = Boolean(args.rate);
       }
       const seconds = Number(args.seconds ?? 0);
-      held.get(name).until = seconds > 0 ? gameTime() + seconds : 0;
+      held.get(owner).until = seconds > 0 ? gameTime() + seconds : 0;
       return {};
     }
-    if (isAxis(spec)) {
+    if (spec.kind === "pad_axis") return stickPress(spec, value);
+    if (spec.kind === "mouse_axis") {
       send1(spec, true, value);
-      if (spec.kind === "pad_axis") send1(spec, false);
       return {};
     }
-    return tap(spec, value, () => held.has(name));
+    return tap(spec, value);
   }
 
   // `input`: one of the game's actions (hooks.controls) by name, through its first key.
@@ -1137,35 +1271,35 @@ export function createBridge(options = {}) {
     const spec = keySpec(name) ?? keySpec(a.keys[0]);
     if (!spec) throw new OpError(`The action ${action}'s key ${a.keys[0]} can't be pressed`);
     const mode = String(args.mode ?? "press");
-    const key = `action:${action}`;
+    const owner = `action:${action}`;
     if (mode === "release") {
-      if (held.has(key)) send1(spec, false);
-      held.delete(key);
+      drop(owner);
       return {};
     }
     if (mode === "hold") {
-      if (!held.has(key)) send1(spec, true);
       // (no lease, as Unreal's continuous injection: until released)
-      held.set(key, { spec, value: 1, renewed: Infinity, until: 0 });
+      if (!held.has(owner)) {
+        held.set(owner, { spec, value: 1, renewed: Infinity, until: 0 });
+        press(owner, spec, 1);
+      }
       return {};
     }
-    return tap(spec, 1, () => held.has(key));
+    return tap(spec, 1);
   }
 
   const keysForHooks = {
     hold(name, value = 1) {
       const spec = keySpec(name);
       if (!spec) throw new OpError(`Unknown key ${name}`);
-      const h = held.get(name);
-      if (!h || h.value !== value) send1(spec, true, value);
-      held.set(name, { spec, value, renewed: Infinity, until: 0 });
+      const owner = `hook:${name}`;
+      const h = held.get(owner);
+      if (!h || h.value !== value) press(owner, spec, value);
+      held.set(owner, { spec, value, renewed: Infinity, until: 0 });
     },
     release(name) {
-      const h = held.get(name);
-      if (h) send1(h.spec, false);
-      held.delete(name);
+      drop(`hook:${name}`);
     },
-    frame: () => new Promise((r) => deferred.push(() => (r(), true))),
+    frame: () => later(() => undefined),
   };
 
   // `move`: walk the player in a kit direction for `seconds`. The game's move hook when it has one; else W/A/S/D
@@ -1347,6 +1481,24 @@ export function createBridge(options = {}) {
   }
 
   // -- rc: reads and calls on the game's own objects -------------------------------------------------------------------
+  //
+  // What rc reaches: the scene's objects (their rcTarget) and the objects the game registers (hooks.objects). A path
+  // into one goes through own properties only, never "__proto__", "prototype" or "constructor": an inherited property
+  // (a function's constructor, Object.prototype) is out of reach. A call calls an own function of the object. A write
+  // writes only what the game exports in hooks.rcWritable, as "object.property" ("state.score"); nothing by default.
+
+  const RC_BANNED = new Set(["__proto__", "prototype", "constructor"]);
+  const isOwn = (o, k) => o !== null && o !== undefined && Object.prototype.hasOwnProperty.call(o, k);
+
+  // One step of an rc path: the own property k of cur, or undefined when cur has no such property. A banned or
+  // inherited name is refused (403), so the answer never tells an inherited property from a missing one by its value.
+  function rcStep(cur, k, where) {
+    if (RC_BANNED.has(k)) throw new OpError(`${where}: rc does not follow ${k}`, 403);
+    if (cur === null || cur === undefined) return undefined;
+    if (isOwn(cur, k)) return cur[k];
+    if (k in Object(cur)) throw new OpError(`${where}: ${k} is inherited, and rc reads only own properties`, 403);
+    return undefined;
+  }
 
   // An object by path: a scene path (/Scene/Player), or a name in hooks.objects, with ".a.b" to go inside it.
   function rcResolve(path) {
@@ -1354,11 +1506,12 @@ export function createBridge(options = {}) {
     const o = resolve(s);
     if (o) return o.rcTarget ?? o;
     const [head, ...rest] = s.split(".");
-    let cur = hooks.objects?.[head];
-    if (cur === undefined) return undefined;
+    const objects = hooks.objects;
+    if (!objects) return undefined;
+    let cur = rcStep(objects, head, s);
     for (const k of rest) {
-      if (cur === null || cur === undefined) return undefined;
-      cur = cur[k];
+      if (cur === undefined) return undefined;
+      cur = rcStep(cur, k, s);
     }
     return cur;
   }
@@ -1387,6 +1540,13 @@ export function createBridge(options = {}) {
     return out;
   }
 
+  function rcWritable(objectPath, name) {
+    const list = hooks.rcWritable;
+    if (!list || RC_BANNED.has(name)) return false;
+    const want = `${objectPath}.${name}`;
+    return Array.isArray(list) ? list.includes(want) : typeof list.has === "function" && list.has(want);
+  }
+
   function rcOp(verb, body) {
     if (verb === "probe") return { verbs: ["property", "call", "describe"] };
     if (!body || typeof body !== "object") throw new OpError("rc needs a body");
@@ -1395,23 +1555,24 @@ export function createBridge(options = {}) {
     if (verb === "property") {
       const name = body.propertyName;
       if (body.access === "WRITE_ACCESS") {
-        const value = body.propertyValue?.[name];
+        if (!rcWritable(String(body.objectPath), String(name))) throw new OpError(`${body.objectPath}.${name} is not writable: the game exports no write for it (hooks.rcWritable)`, 403);
         if (obj === null || typeof obj !== "object") throw new OpError(`${body.objectPath} can't be written`);
-        obj[name] = value;
+        obj[name] = body.propertyValue?.[name];
         return {};
       }
       if (!name) return plain(obj, 0, true);
       let v = obj;
       for (const part of String(name).split(/[.:]/)) {
-        if (v === null || v === undefined) break;
-        v = v[part];
+        v = rcStep(v, part, `${body.objectPath} ${name}`);
+        if (v === undefined) break;
       }
       if (v === undefined) throw new OpError(`${body.objectPath} has no property ${name}`, 404);
       return { [name]: plain(v) };
     }
     if (verb === "call") {
-      const fn = obj?.[body.functionName];
-      if (typeof fn !== "function") throw new OpError(`${body.objectPath} has no function ${body.functionName}`, 404);
+      const fname = String(body.functionName ?? "");
+      const fn = rcStep(obj, fname, String(body.objectPath));
+      if (typeof fn !== "function") throw new OpError(`${body.objectPath} has no function ${fname}`, 404);
       const params = body.parameters ?? {};
       const args = Array.isArray(params.args) ? params.args : Object.keys(params).length ? [params] : [];
       const r = fn.apply(obj, args);
@@ -1419,22 +1580,22 @@ export function createBridge(options = {}) {
     }
     if (verb === "describe") {
       if (obj === null || typeof obj !== "object") return { Name: String(body.objectPath), Class: typeof obj, Properties: [], Functions: [] };
+      // (own properties only: what rc can read and call)
       const props = [];
       const fns = [];
-      const seen = new Set();
-      for (let p = obj; p && p !== Object.prototype; p = Object.getPrototypeOf(p))
-        for (const k of Object.getOwnPropertyNames(p)) {
-          if (seen.has(k) || k === "constructor" || k.startsWith("_")) continue;
-          seen.add(k);
-          let v;
-          try {
-            v = obj[k];
-          } catch {
-            continue;
-          }
-          (typeof v === "function" ? fns : props).push(typeof v === "function" ? { Name: k } : { Name: k, Type: Array.isArray(v) ? "array" : typeof v });
+      for (const k of Object.getOwnPropertyNames(obj)) {
+        if (RC_BANNED.has(k) || k.startsWith("_")) continue;
+        let v;
+        try {
+          v = obj[k];
+        } catch {
+          continue;
         }
-      return { Name: String(body.objectPath), Class: obj.constructor?.name ?? "Object", Properties: props.slice(0, 300), Functions: fns.slice(0, 300) };
+        (typeof v === "function" ? fns : props).push(typeof v === "function" ? { Name: k } : { Name: k, Type: Array.isArray(v) ? "array" : typeof v });
+      }
+      const proto = Object.getPrototypeOf(obj);
+      const cls = proto && isOwn(proto, "constructor") && typeof proto.constructor === "function" ? proto.constructor.name : "Object";
+      return { Name: String(body.objectPath), Class: cls || "Object", Properties: props.slice(0, 300), Functions: fns.slice(0, 300) };
     }
     throw new OpError(`unknown rc verb ${verb}`);
   }
@@ -1520,6 +1681,10 @@ export function createBridge(options = {}) {
       closed = true;
       releaseAll();
       stopRecording();
+      // The ops still waiting end now (a watch, a tap, a hook's frame): none waits for a frame that never comes
+      deferred.length = 0;
+      for (const w of waiting) w.reject(closedError());
+      waiting.clear();
       uninstallPad();
       g.removeEventListener?.("error", onError);
       g.removeEventListener?.("unhandledrejection", onRejection);
