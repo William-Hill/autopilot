@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createBridge, isLoopbackUrl, keySpec, makeFrame, project, unrealName, worldBox } from "../autopilot-bridge.js";
+import { createBridge, isLoopbackUrl, keySpec, legacyKeyCode, makeFrame, project, unrealName, worldBox } from "../autopilot-bridge.js";
 import { add, camera, makeFakeGame, object } from "./fake_game.mjs";
 
 test("the kit frame is Godot's: kit = 100 * (-z, x, y)", () => {
@@ -571,4 +571,25 @@ test("record start fails, and records nothing, when the picture canvas goes away
   }
   assert.deepEqual(sockets[0].sent.filter((f) => f.type === "frame"), []);
   game.bridge.close();
+});
+
+// -- the review finding of William-Hill/atl-arcade#391 ---------------------------------------------------------------
+
+test("an inherited name (constructor, toString) is no key", async () => {
+  for (const name of ["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"]) assert.equal(keySpec(name), null, name);
+  assert.equal(legacyKeyCode("constructor"), 0);
+  // The names the tables do have still work
+  assert.deepEqual(keySpec("W"), { kind: "key", code: "KeyW" });
+  assert.deepEqual(keySpec("RightShift"), { kind: "key", code: "ShiftRight" });
+  assert.deepEqual(keySpec("LeftMouseButton"), { kind: "mouse_button", button: 0 });
+  assert.deepEqual(keySpec("Gamepad_FaceButton_Bottom"), { kind: "pad_button", button: 0 });
+  assert.deepEqual(keySpec("Gamepad_LeftX"), { kind: "pad_axis", axis: 0, sign: 1 });
+  assert.deepEqual(keySpec("Gamepad_LeftTriggerAxis"), { kind: "pad_button", button: 6, analog: true });
+  assert.equal(legacyKeyCode("Space"), 32);
+
+  const game = makeFakeGame({ options: { moveKeys: { right: "constructor" } } });
+  await assert.rejects(game.bridge.handle("move", { direction: { X: 1, Y: 1, Z: 0 }, seconds: 0.05, via: "keys" }), /Unknown move key constructor/);
+  await assert.rejects(game.bridge.handle("key", { key: "constructor", mode: "press" }), /Unknown key constructor/);
+  await assert.rejects(game.bridge.handle("key", { key: "toString", mode: "hold" }), /Unknown key toString/);
+  assert.deepEqual(game.keyLog, []);
 });

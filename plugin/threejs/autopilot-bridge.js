@@ -194,19 +194,27 @@ const PAD_TRIGGER_AXES = { Gamepad_LeftTriggerAxis: 6, Gamepad_RightTriggerAxis:
 
 // A key name as a spec: {kind: "key", code} | {kind: "mouse_button", button} | {kind: "wheel", dy} |
 // {kind: "mouse_axis", axis} | {kind: "pad_button", button} | {kind: "pad_axis", axis, sign} | null.
+// A name in one of the tables above: an own entry only, so an inherited name (constructor, toString) is no key.
+const entry = (table, name) => (Object.prototype.hasOwnProperty.call(table, name) ? table[name] : undefined);
+
 export function keySpec(name) {
   if (!name) return null;
   if (/^[A-Za-z]$/.test(name)) return { kind: "key", code: `Key${name.toUpperCase()}` };
-  if (NAMED_CODES[name]) return { kind: "key", code: NAMED_CODES[name] };
+  const named = entry(NAMED_CODES, name);
+  if (named) return { kind: "key", code: named };
   const f = /^F(\d{1,2})$/.exec(name);
   if (f && +f[1] >= 1 && +f[1] <= 12) return { kind: "key", code: name };
-  if (name in MOUSE_BUTTONS) return { kind: "mouse_button", button: MOUSE_BUTTONS[name] };
+  const mouse = entry(MOUSE_BUTTONS, name);
+  if (mouse !== undefined) return { kind: "mouse_button", button: mouse };
   if (name === "MouseScrollUp") return { kind: "wheel", dy: -100 };
   if (name === "MouseScrollDown") return { kind: "wheel", dy: 100 };
   if (name === "MouseX" || name === "MouseY") return { kind: "mouse_axis", axis: name };
-  if (name in PAD_BUTTONS) return { kind: "pad_button", button: PAD_BUTTONS[name] };
-  if (name in PAD_AXES) return { kind: "pad_axis", axis: PAD_AXES[name][0], sign: PAD_AXES[name][1] };
-  if (name in PAD_TRIGGER_AXES) return { kind: "pad_button", button: PAD_TRIGGER_AXES[name], analog: true };
+  const button = entry(PAD_BUTTONS, name);
+  if (button !== undefined) return { kind: "pad_button", button };
+  const axis = entry(PAD_AXES, name);
+  if (axis) return { kind: "pad_axis", axis: axis[0], sign: axis[1] };
+  const trigger = entry(PAD_TRIGGER_AXES, name);
+  if (trigger !== undefined) return { kind: "pad_button", button: trigger, analog: true };
   // A KeyboardEvent.code as it is (KeyW, ShiftLeft, ArrowUp)
   if (/^(Key[A-Z]|Digit\d|Numpad\w+|Arrow\w+|Shift\w+|Control\w+|Alt\w+|Meta\w+|Space|Enter|Escape|Tab|Backspace)$/.test(name))
     return { kind: "key", code: name };
@@ -238,7 +246,7 @@ export function legacyKeyCode(code) {
   if (d) return (d[1] === "Digit" ? 48 : 96) + Number(d[2]);
   const f = /^F(\d{1,2})$/.exec(code);
   if (f) return 111 + Number(f[1]);
-  return KEY_CODES[code] ?? 0;
+  return entry(KEY_CODES, code) ?? 0;
 }
 
 // The `key` text a KeyboardEvent carries for a code.
